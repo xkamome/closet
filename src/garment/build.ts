@@ -736,8 +736,9 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     const armG0 = m.upperArm / 100;
     const G0 = Math.max(g("upperArm") ?? armG0 + (spec.silhouette === "fitted" ? 0.05 : 0.1), armG0 + TAU * th * 2);
     const wristG = 0.155 * (m.height / 160);
-    const Gend = g("sleeveOpening") ?? (spec.sleeve === "long" ? wristG + 0.07 : spec.sleeve === "elbow" ? G0 * 0.92 : G0 * 1.02);
-    const tEnd = Math.max(0.05, sleeveLen);
+    const Gend = g("sleeveOpening") ?? (spec.sleeve === "long" ? wristG + 0.035 : spec.sleeve === "elbow" ? G0 * 0.92 : G0 * 1.02);
+    // never past the wrist: slices beyond it would cut through the hand and flare the cuff
+    const tEnd = Math.min(Math.max(0.05, sleeveLen), upLen + loLen + 0.01);
     const armGirthAt = (t: number) => {
       if (t <= upLen) return armG0 * (1 - 0.12 * (t / upLen));
       return armG0 * 0.88 + (wristG - armG0 * 0.88) * Math.min(1, (t - upLen) / loLen);
@@ -753,7 +754,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
       f1 = scale(f1, 1 / Math.hypot(f1[0], f1[1], f1[2]));
       const f2 = cross(d, f1);
       // the arm's own cross-section (deltoid, biceps...) so the sleeve cap is round, not a cylinder
-      const armPts = slice(rest, armTris[si], c, d, f1, f2);
+      const armPts = t > upLen + loLen - 0.015 ? [] : slice(rest, armTris[si], c, d, f1, f2);
       const hull = armPts.length >= 6 ? convexHull(armPts) : [];
       const Parm = hull.length >= 6 ? perimeter(hull) : armGirthAt(t);
       const G = Math.max(G0 + (Gend - G0) * sK, Parm + TAU * th * 1.5);
@@ -784,6 +785,8 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
       }
     }
     for (let q = base; q < base + N * 2; q++) extraPinned.push(q);
+    // long sleeves end in a fitted cuff that holds the wrist: pin it so the sleeve cannot slide down the arm
+    if (spec.sleeve === "long") for (let q = base + (K - 1) * N; q < base + (K + 1) * N; q++) extraPinned.push(q);
   }
   stage("before-rib");
   // ---------- rib collar: a ~1.5 cm band standing on the neckline
