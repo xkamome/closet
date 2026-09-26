@@ -147,13 +147,19 @@ async function main() {
         if (y < seat) seat = y;
         sx += pos[i * 3]; sz += pos[i * 3 + 2]; n++;
       }
-      stage.setFigure(maxY, Math.max(0.2, seat - 0.005), new Vector3(sx / n, 0, sz / n - 0.04));
+      const seatY = Math.max(0.2, seat - 0.005);
+      seatInfo = { x: sx / n, z: sz / n - 0.04, r: 0.2, y: seatY };
+      stage.setFigure(maxY, seatY, new Vector3(seatInfo.x, 0, seatInfo.z));
     } else {
+      seatInfo = null;
       stage.setFigure(maxY, null);
     }
+    // let skirts settle once the pose is reached (sitting / non-standing poses)
+    if (poseName === "sit") for (const w of worn) w.view?.update(true, seatInfo);
     stage.setFraming(poseName === "half" ? "half" : "full");
   };
 
+  let seatInfo: { x: number; z: number; r: number; y: number } | null = null;
   let poseAnim: { from: typeof currentPose; to: typeof currentPose; t: number } | null = null;
   const setPose = (p: PoseName) => {
     poseName = p;
@@ -466,6 +472,7 @@ async function main() {
     get pose() { return poseName; },
     get poseSettled() { return poseAnim === null; },
     garmentKeys: GARMENT_KEY_LABELS as Record<GarmentKey, string>,
+    setPose, setUnderwear, measureFromPhotos, loadImage,
   };
   (window as any).__ready = true;
 }

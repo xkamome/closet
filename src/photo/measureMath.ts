@@ -50,9 +50,9 @@ export interface PhotoMeasureResult {
 }
 
 /** Typical depth/width ratios of the female torso (front view width -> side depth). */
-const DEPTH_RATIO = { bust: 0.8, waist: 0.74, hips: 0.72 };
+const DEPTH_RATIO = { bust: 0.8, waist: 0.74, hips: 0.65 };
 /** Tape-measure girth runs slightly above the ellipse (flat back / belly). */
-const GIRTH_CAL = { bust: 1.03, waist: 1.02, hips: 1.03 };
+const GIRTH_CAL = { bust: 1.07, waist: 1.03, hips: 1.05 };
 
 export function measureFromSilhouette(
   front: Silhouette, lm: Landmark[], heightCm: number,

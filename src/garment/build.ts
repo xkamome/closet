@@ -22,6 +22,10 @@ export interface GarmentMesh {
   index: Uint32Array;
   /** garment girth / body girth near each vertex (for the tightness heat-map) */
   strain: Float32Array;
+  /** 1 = free-hanging cloth (skirt cone below its top rings), simulated when sitting */
+  free: Uint8Array;
+  /** output vertex -> welded particle id (front/back UV seams duplicate vertices) */
+  weld: Uint32Array;
   /** front-view bbox of the rest garment (m), for photo mapping */
   bbox: { minX: number; maxX: number; minY: number; maxY: number };
   /** torso half-width at 60% height (front view), for photo alignment */
@@ -428,6 +432,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   }
 
   // ---------- cone piece (samples the same radius grid, so it joins the upper piece seamlessly)
+  let coneFreeFrom = Infinity;
   if (needsCone) {
     const N = 96;
     const step = 0.01;
@@ -435,6 +440,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     const count = Math.max(2, Math.ceil((top - hemY) / step));
     const phase = 0.7;
     const base = work.skin.length;
+    coneFreeFrom = base + N * 3; // the top three rings stay attached to the hips
     const ys: number[] = [];
     for (let L = 0; L <= count; L++) ys.push(top - ((top - hemY) * L) / count);
     // nearest-body-vertex skinning (k nearest, inverse distance) using rest torso/leg vertices
@@ -521,7 +527,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   }
   const cx = 0;
   const outPos: number[] = [], outUV: number[] = [], outIdx: number[] = [], outStrain: number[] = [];
-  const outSkI: number[] = [], outSkW: number[] = [];
+  const outSkI: number[] = [], outSkW: number[] = [], outFree: number[] = [], outWeld: number[] = [];
   const vmap = new Map<number, number>();
   const W = Math.max(1e-3, Math.max(bx1 - cx, cx - bx0));
   const H = Math.max(1e-3, by1 - by0);
@@ -537,6 +543,8 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     const u = 0.5 + ((x - cx) / W) * 0.5; // 0..1 across the garment width
     outUV.push(back ? 0.5 + (1 - u) * 0.5 : u * 0.5, (y - by0) / H);
     outStrain.push(strainArr[v] ?? 1);
+    outFree.push(v >= coneFreeFrom ? 1 : 0);
+    outWeld.push(v);
     outSkI.push(...work.skin[v].i);
     outSkW.push(...work.skin[v].w);
     return id;
@@ -558,6 +566,8 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     uv: Float32Array.from(outUV),
     index: Uint32Array.from(outIdx),
     strain: Float32Array.from(outStrain),
+    free: Uint8Array.from(outFree),
+    weld: Uint32Array.from(outWeld),
     bbox: { minX: bx0, maxX: bx1, minY: by0, maxY: by1 },
     torsoHalfWidth: halfW,
     vertexCount: outStrain.length,

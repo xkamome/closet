@@ -7,6 +7,7 @@ import type { GarmentMesh } from "../garment/build";
 import type { GarmentSpec } from "../garment/spec";
 import type { AvatarView } from "./avatarView";
 import { collide } from "../garment/collide";
+import { drapeCloth } from "../garment/drape";
 
 export class GarmentView {
   readonly mesh: THREE.Mesh;
@@ -63,13 +64,20 @@ export class GarmentView {
     this.mesh.material = on ? this.heatMaterial : this.material;
   }
 
-  /** Re-skin after pose changes. */
-  update(): void {
+  /** Re-skin after pose changes; `simulate` lets free-hanging cloth settle (used once a pose is reached). */
+  update(simulate = false, seat: { x: number; z: number; r: number; y: number } | null = null): void {
     const body = this.avatar.body;
     const d = this.data;
     body.skinRaw(d.rest, d.skinIdx, d.skinW, d.vertexCount, this.posed);
-    collide(this.posed, d.vertexCount, this.avatar.posedBodyPositions, this.avatar.posedBodyNormals, body.data.bodyVertexCount,
-      Math.max(0.003, this.spec.fabric.thickness * 1.5));
+    const gap = Math.max(0.003, this.spec.fabric.thickness * 1.5);
+    collide(this.posed, d.vertexCount, this.avatar.posedBodyPositions, this.avatar.posedBodyNormals, body.data.bodyVertexCount, gap);
+    if (simulate && d.free.some((f) => f)) {
+      drapeCloth({
+        pos: this.posed, rest: d.rest, index: d.index, free: d.free, weld: d.weld,
+        body: this.avatar.posedBodyPositions, bodyN: this.avatar.posedBodyNormals, bodyCount: body.data.bodyVertexCount,
+        gap: gap + 0.006, seat, drape: this.spec.fabric.drape,
+      });
+    }
     const g = this.mesh.geometry;
     (g.attributes.position.array as Float32Array).set(this.posed);
     computeNormals(this.posed, d.index, d.vertexCount, g.attributes.normal.array as Float32Array);
