@@ -79,9 +79,9 @@
       <!-- 試穿 -->
       <div class="tab" id="tab-wear" hidden>
         <h2>上傳衣服照片</h2>
-        <p class="hint">商品平拍照或白底照效果最好。系統會自動去背、判斷版型，你也可以手動修改。</p>
+        <p class="hint">可以用商品平拍照／白底照，也可以用模特兒穿著的全身照（會自動切出衣服並依身體位置對齊）。版型判斷不對可以手動修改。</p>
         <label class="file big">選擇照片<input id="garment-photo" type="file" accept="image/*" /></label>
-        <div id="cutout-wrap" hidden><canvas id="cutout-preview"></canvas><p class="hint" id="guess-text"></p></div>
+        <div id="cutout-wrap" hidden><canvas id="cutout-preview"></canvas><p class="hint" id="guess-text"></p><div id="person-garments" class="chips"></div></div>
         <div class="grid2">
           <label>類型<select id="g-type"><option value="top">上衣</option><option value="dress">洋裝</option><option value="skirt">裙子</option><option value="pants">長褲</option></select></label>
           <label>版型<select id="g-silhouette"><option value="fitted">合身</option><option value="straight" selected>直筒</option><option value="aline">A 字</option><option value="oversized">寬鬆</option></select></label>

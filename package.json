@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "build:avatar": "python tools/build_avatar.py",
-    "bridge": "node server/ai-bridge.mjs"
+    "bridge": "node server/ai-bridge.mjs",
+    "setup": "python tools/fetch_assets.py && python tools/build_avatar.py && node tools/fetch_models.mjs",
+    "verify": "node verify/verify.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",

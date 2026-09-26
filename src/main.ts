@@ -10,14 +10,16 @@ import { AvatarView } from "./viewer/avatarView";
 import { Stage } from "./viewer/scene";
 import { GarmentView } from "./viewer/garmentView";
 import { buildGarment } from "./garment/build";
-import { buildAtlas, cutoutGarment, guessGarment, loadImage, type Cutout } from "./garment/photo";
+import { buildAtlas, cutoutGarment, cutoutFromMask, guessGarment, loadImage, toCanvas, type AvatarMarks, type Cutout } from "./garment/photo";
+import { analyzePersonGarments, marksFromLandmarks, type PersonGarment } from "./garment/personPhoto";
+import { segmentPerson } from "./photo/segmenter";
 import { defaultSpec, underwearSpecs, TYPE_LABELS, SLEEVE_LABELS, SILHOUETTE_LABELS, type GarmentSpec, type GarmentType } from "./garment/spec";
 import { parseSizeChart, GARMENT_KEY_LABELS, type ParsedChart, type GarmentKey } from "./fit/sizeChart";
 import { parseFabric, stretchLabel, DEFAULT_FABRIC, type Fabric } from "./fit/fabric";
 import { evaluateFit, recommendSize, type FitResult } from "./fit/fit";
 import { classifyBodyShape } from "./style/bodyShape";
 import { buildAdvice, buildAIPrompt } from "./style/advice";
-import { measureFromPhotos } from "./photo/bodyFromPhoto";
+import { measureFromPhotos, detectPerson } from "./photo/bodyFromPhoto";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
@@ -189,12 +191,27 @@ async function main() {
 
   // ------------------------------------------------------------ garments
   const layerOf = (w: Worn) => (w.underwear ? 0 : w.spec.type === "top" ? 2 : 1);
+  // avatar landmarks (rest coordinates) for warping photos of people onto garments
+  const avatarMarks = (): AvatarMarks => {
+    const j = (n: string) => body.joint(n);
+    const names = ["upperarm01.L____head", "upperleg01.L____head", "lowerleg01.L____head", "foot.L____head"];
+    return { y: names.map((n) => j(n).y) as any, half: names.map((n) => Math.abs(j(n).x)) as any };
+  };
+  /** landmark chain position (0 shoulder .. 3 ankle) -> cm from the floor on the avatar */
+  const chainCm = (t: number) => {
+    let minY = Infinity;
+    for (let i = 1; i < data.bodyVertexCount * 3; i += 3) minY = Math.min(minY, body.rest[i]);
+    const ys = avatarMarks().y.map((y) => (y - minY) * 100);
+    const tt = Math.max(0, Math.min(3, t)), i = Math.min(2, Math.floor(tt));
+    const base = ys[i] + (ys[i + 1] - ys[i]) * (tt - i);
+    return t > 3 ? ys[3] - (t - 3) * (ys[2] - ys[3]) : base;
+  };
   const buildView = (w: Worn) => {
     w.view?.dispose();
     const saved = body.pose;
     const gm = buildGarment(w.spec, { body, measurer, m: meas, layer: layerOf(w) });
     body.setPose(saved);
-    const atlas = buildAtlas(w.cutout, { bbox: gm.bbox, torsoHalfWidth: gm.torsoHalfWidth, plainBack: w.plainBack }, w.spec.color ?? "#7a93b8");
+    const atlas = buildAtlas(w.cutout, { bbox: gm.bbox, torsoHalfWidth: gm.torsoHalfWidth, plainBack: w.plainBack, avatarMarks: avatarMarks() }, w.spec.color ?? "#7a93b8");
     w.view = new GarmentView(avatar, w.spec, gm, atlas);
     w.view.setHeatmap(heatmap && !w.underwear);
   };
@@ -253,17 +270,64 @@ async function main() {
     return spec;
   };
 
+  let personGarments: PersonGarment[] = [];
+  let pendingHemT: number | null = null;
+  const showPreview = (c: Cutout) => {
+    const prev = $<HTMLCanvasElement>("cutout-preview");
+    prev.width = c.width; prev.height = c.height;
+    prev.getContext("2d")!.drawImage(c.canvas, 0, 0);
+    $("cutout-wrap").hidden = false;
+  };
+  const selectPersonGarment = (i: number, canvas: HTMLCanvasElement, marks: ReturnType<typeof marksFromLandmarks>) => {
+    const g = personGarments[i];
+    lastCutout = cutoutFromMask(canvas, g.mask, g.color, marks);
+    pendingHemT = g.hemT;
+    showPreview(lastCutout);
+    $<HTMLSelectElement>("g-type").value = g.type;
+    $<HTMLSelectElement>("g-silhouette").value = g.silhouette;
+    if (g.type === "top" || g.type === "dress") $<HTMLSelectElement>("g-sleeve").value = g.sleeve;
+    $<HTMLInputElement>("g-color").value = "#" + g.color.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
+    $("guess-text").textContent = `從人像照偵測到「${TYPE_LABELS[g.type]}」${g.type === "top" || g.type === "dress" ? "・" + SLEEVE_LABELS[g.sleeve] : ""}（${g.reason}）。`;
+    document.querySelectorAll<HTMLButtonElement>("#person-garments button").forEach((b, k) => b.classList.toggle("on", k === i));
+  };
+  /** Try the "photo of a person wearing it" route; returns false for flat-lay / product photos. */
+  const tryPersonPhoto = async (img: HTMLImageElement): Promise<boolean> => {
+    const det = await detectPerson(img).catch(() => null);
+    const lm = det?.landmarks;
+    if (!lm) return false;
+    const vis = [11, 12, 23, 24].every((k) => (lm[k].visibility ?? 1) > 0.5);
+    if (!vis) return false;
+    const canvas = toCanvas(img);
+    const k = canvas.width / img.naturalWidth;
+    const marks = marksFromLandmarks(lm.map((p) => ({ x: p.x * k, y: p.y * k })));
+    const labels = await segmentPerson(canvas);
+    const rgb = canvas.getContext("2d", { willReadFrequently: true })!.getImageData(0, 0, canvas.width, canvas.height).data;
+    personGarments = analyzePersonGarments(labels, rgb, canvas.width, canvas.height, marks);
+    if (!personGarments.length) return false;
+    const box = $("person-garments");
+    box.innerHTML = "";
+    personGarments.forEach((g, i) => {
+      const b = document.createElement("button");
+      b.textContent = `${TYPE_LABELS[g.type]}${g.type === "top" || g.type === "dress" ? "・" + SLEEVE_LABELS[g.sleeve] : ""}`;
+      b.dataset.type = g.type;
+      b.onclick = () => selectPersonGarment(i, canvas, marks);
+      box.appendChild(b);
+    });
+    selectPersonGarment(0, canvas, marks);
+    return true;
+  };
+
   $<HTMLInputElement>("garment-photo").addEventListener("change", async (e) => {
     const f = (e.target as HTMLInputElement).files?.[0];
     if (!f) return;
     await busy(async () => {
       const img = await loadImage(f);
+      $("person-garments").innerHTML = "";
+      pendingHemT = null;
+      if (await tryPersonPhoto(img)) return;
       const c = cutoutGarment(img);
       lastCutout = c;
-      const prev = $<HTMLCanvasElement>("cutout-preview");
-      prev.width = c.width; prev.height = c.height;
-      prev.getContext("2d")!.drawImage(c.canvas, 0, 0);
-      $("cutout-wrap").hidden = false;
+      showPreview(c);
       const g = guessGarment(c);
       $<HTMLSelectElement>("g-type").value = g.type;
       if (g.type === "top" || g.type === "dress") $<HTMLSelectElement>("g-sleeve").value = g.sleeve;
@@ -273,7 +337,17 @@ async function main() {
   });
   $("wear").addEventListener("click", () => {
     if (!lastCutout) { $("guess-text").textContent = "請先選擇衣服照片，或按「用純色試穿」。"; $("cutout-wrap").hidden = false; return; }
-    wear(readGarmentForm(), lastCutout, $<HTMLInputElement>("g-plainback").checked);
+    const spec = readGarmentForm();
+    if (lastCutout.person && pendingHemT !== null) {
+      // garment length read off the photo, transferred through the body landmarks
+      const hemCm = chainCm(pendingHemT);
+      const top = spec.type === "skirt" || spec.type === "pants"
+        ? meas.waistY + (spec.rise === "high" ? 3 : spec.rise === "low" ? -6 : 0)
+        : meas.neckY;
+      spec.m.length = Math.max(spec.type === "top" ? 30 : 25, Math.round(top - hemCm));
+      if (spec.type === "pants") spec.m.inseam = Math.max(20, Math.round(meas.crotchY - hemCm));
+    }
+    wear(spec, lastCutout, $<HTMLInputElement>("g-plainback").checked);
   });
   $("wear-plain").addEventListener("click", () => wear(readGarmentForm(), null, true));
 

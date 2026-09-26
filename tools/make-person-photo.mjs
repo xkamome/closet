@@ -1,0 +1,33 @@
+// Renders the avatar wearing the sample T-shirt + skirt and saves it as a "person photo" test input.
+import { chromium } from "playwright";
+const browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+const page = await browser.newPage({ viewport: { width: 1000, height: 1000 } });
+await page.goto("http://localhost:5391/");
+await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
+const idle = () => page.waitForFunction(() => document.querySelector("#busy").hidden, null, { timeout: 60000 });
+await page.click('#tabs button[data-tab="wear"]');
+await page.setInputFiles("#garment-photo", "samples/tshirt.png");
+await page.waitForFunction(() => /判斷為/.test(document.querySelector("#guess-text").textContent), null, { timeout: 30000 });
+await idle();
+await page.selectOption("#g-type", "top");
+await page.selectOption("#g-silhouette", "straight");
+await page.click("#wear");
+await page.waitForFunction(() => window.__closet.worn.length === 1, null, { timeout: 30000 });
+await idle();
+await page.setInputFiles("#garment-photo", "samples/skirt.png");
+await page.waitForTimeout(500);
+await idle();
+await page.selectOption("#g-type", "skirt");
+await page.selectOption("#g-silhouette", "aline");
+await page.click("#wear");
+await page.waitForFunction(() => window.__closet.worn.length === 2, null, { timeout: 30000 });
+await idle();
+await page.evaluate(() => {
+  document.getElementById("panel").style.display = "none";
+  document.getElementById("toolbar").style.display = "none";
+  document.getElementById("legend").hidden = true;
+});
+await page.waitForTimeout(1500);
+await page.locator("#viewport canvas").screenshot({ path: "samples/person.png" });
+await browser.close();
+console.log("saved samples/person.png");

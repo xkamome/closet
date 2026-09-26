@@ -2,6 +2,20 @@
 // and building the front/back texture atlas that maps the photo onto the 3D garment.
 
 import type { GarmentType, Sleeve } from "./spec";
+import { chainY, type PersonMarks } from "./personPhoto";
+
+/** Data to warp a photo of a person onto the garment landmark-to-landmark. */
+export interface PersonWarp {
+  image: HTMLCanvasElement; // full photo
+  mask: Uint8Array; // this garment's pixels (photo size)
+  marks: PersonMarks;
+}
+
+/** Avatar landmarks in rest coordinates (m): y of shoulder/hip/knee/ankle joints and their half widths. */
+export interface AvatarMarks {
+  y: [number, number, number, number];
+  half: [number, number, number, number];
+}
 
 export interface Cutout {
   canvas: HTMLCanvasElement; // RGBA, background transparent, cropped to the garment
@@ -12,6 +26,8 @@ export interface Cutout {
   /** half width (px) of the garment body at 60% of its height, measured from the centre column */
   torsoHalfWidth: number;
   centerX: number;
+  /** present when the garment was extracted from a photo of a person wearing it */
+  person?: PersonWarp;
 }
 
 export async function loadImage(src: File | Blob | string): Promise<HTMLImageElement> {
@@ -176,6 +192,7 @@ export interface AtlasOptions {
   bbox: { minX: number; maxX: number; minY: number; maxY: number };
   torsoHalfWidth: number;
   plainBack?: boolean;
+  avatarMarks?: AvatarMarks;
 }
 
 /** 2048x1024 atlas: left = front (photo), right = back (mirrored photo or plain colour). */
@@ -198,6 +215,25 @@ export function buildAtlas(c: Cutout | null, opts: AtlasOptions, fallbackColor =
 
   const { bbox } = opts;
   const W = Math.max(bbox.maxX, -bbox.minX); // atlas u spans [-W, W] around x=0
+  if (c.person && opts.avatarMarks) {
+    const front = warpPerson(c.person, opts.avatarMarks, bbox, W, S);
+    const filled = bleedCanvas(front, 192);
+    const drawSide = (x0: number, mirror: boolean) => {
+      ctx.save();
+      ctx.translate(x0 + S / 2, 0);
+      if (mirror) ctx.scale(-1, 1);
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(filled, -S / 2, 0, S, S);
+      ctx.drawImage(front, -S / 2, 0, S, S);
+      ctx.restore();
+    };
+    drawSide(0, false);
+    if (!opts.plainBack) {
+      drawSide(S, true);
+      ctx.save(); ctx.globalAlpha = 0.22; ctx.fillStyle = base; ctx.fillRect(S, 0, S, S); ctx.restore();
+    }
+    return cnv;
+  }
   // horizontal: photo torso half-width -> garment torso half-width
   const sx = (opts.torsoHalfWidth / W) * (S / 2) / c.torsoHalfWidth;
   // vertical: photo top/bottom -> garment top/bottom
@@ -268,4 +304,126 @@ function bleedFill(c: Cutout, sx: number, drawW: number, drawH: number, S: numbe
   for (let i = 0; i < R * R; i++) d[i * 4 + 3] = 255;
   ctx.putImageData(img, 0, 0);
   return cnv;
+}
+
+/** Resample the photo into the garment's front-view frame using landmark-piecewise mapping. */
+function warpPerson(p: PersonWarp, a: AvatarMarks, bbox: AtlasOptions["bbox"], W: number, S: number): HTMLCanvasElement {
+  const out = document.createElement("canvas");
+  out.width = out.height = S;
+  const octx = out.getContext("2d")!;
+  const img = octx.createImageData(S, S);
+  const src = p.image.getContext("2d", { willReadFrequently: true })!.getImageData(0, 0, p.image.width, p.image.height).data;
+  const PW = p.image.width, PH = p.image.height;
+  const m = p.marks;
+  const H = bbox.maxY - bbox.minY;
+  // avatar chain position t for a rest-space y (shoulder=0 .. ankle=3, y decreasing downward)
+  const tOfY = (y: number) => {
+    const ys = a.y;
+    if (y >= ys[0]) return -(y - ys[0]) / Math.max(1e-6, ys[0] - ys[1]);
+    for (let i = 0; i < 3; i++) if (y >= ys[i + 1]) return i + (ys[i] - y) / Math.max(1e-6, ys[i] - ys[i + 1]);
+    return 3 + (ys[3] - y) / Math.max(1e-6, ys[2] - ys[3]);
+  };
+  const lerpAt = (arr: number[], t: number) => {
+    const tt = Math.max(0, Math.min(3, t));
+    const i = Math.min(2, Math.floor(tt));
+    return arr[i] + (arr[i + 1] - arr[i]) * (tt - i);
+  };
+  const pHalf = [
+    Math.abs(m.shoulderL[0] - m.shoulderR[0]) / 2, Math.abs(m.hipL[0] - m.hipR[0]) / 2,
+    Math.abs(m.kneeL[0] - m.kneeR[0]) / 2, Math.abs(m.ankleL[0] - m.ankleR[0]) / 2,
+  ];
+  const pMid = [
+    (m.shoulderL[0] + m.shoulderR[0]) / 2, (m.hipL[0] + m.hipR[0]) / 2,
+    (m.kneeL[0] + m.kneeR[0]) / 2, (m.ankleL[0] + m.ankleR[0]) / 2,
+  ];
+  // the person's left (landmark L) appears on the image right when facing the camera; avatar +x is its left
+  const sign = m.shoulderL[0] >= m.shoulderR[0] ? 1 : -1;
+  for (let j = 0; j < S; j++) {
+    const Y = bbox.maxY - (j / S) * H;
+    const t = tOfY(Y);
+    const py = chainY(m, t);
+    const scale = lerpAt(pHalf, t) / Math.max(1e-4, lerpAt(a.half, t));
+    const mid = lerpAt(pMid, t);
+    const yi = Math.round(py);
+    for (let i = 0; i < S; i++) {
+      const X = ((i / S) * 2 - 1) * W;
+      const px = Math.round(mid + sign * X * scale);
+      const o = (j * S + i) * 4;
+      if (px < 0 || yi < 0 || px >= PW || yi >= PH || !p.mask[yi * PW + px]) continue;
+      const so = (yi * PW + px) * 4;
+      img.data[o] = src[so]; img.data[o + 1] = src[so + 1]; img.data[o + 2] = src[so + 2]; img.data[o + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  return out;
+}
+
+/** Nearest-colour fill of transparent pixels, at low resolution. */
+function bleedCanvas(srcCanvas: HTMLCanvasElement, R: number): HTMLCanvasElement {
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = R;
+  const ctx = cnv.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(srcCanvas, 0, 0, R, R);
+  const img = ctx.getImageData(0, 0, R, R);
+  const d = img.data;
+  const filled = new Uint8Array(R * R);
+  for (let i = 0; i < R * R; i++) filled[i] = d[i * 4 + 3] > 200 ? 1 : 0;
+  if (!filled.some((f) => f)) return cnv;
+  let frontier = true;
+  for (let pass = 0; pass < R && frontier; pass++) {
+    frontier = false;
+    const next = filled.slice();
+    for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
+      const i = y * R + x;
+      if (filled[i]) continue;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= R || yy >= R) continue;
+        const j = yy * R + xx;
+        if (!filled[j]) continue;
+        r += d[j * 4]; g += d[j * 4 + 1]; b += d[j * 4 + 2]; n++;
+      }
+      if (n) { d[i * 4] = r / n; d[i * 4 + 1] = g / n; d[i * 4 + 2] = b / n; d[i * 4 + 3] = 255; next[i] = 1; frontier = true; }
+    }
+    filled.set(next);
+  }
+  for (let i = 0; i < R * R; i++) d[i * 4 + 3] = 255;
+  ctx.putImageData(img, 0, 0);
+  return cnv;
+}
+
+/** Crop a garment (mask) out of a full photo into a Cutout, keeping the warp data. */
+export function cutoutFromMask(image: HTMLCanvasElement, mask: Uint8Array, color: [number, number, number], marks: PersonMarks): Cutout {
+  const W = image.width, H = image.height;
+  let x0 = W, x1 = 0, y0 = H, y1 = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x]) {
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  }
+  if (x1 < x0) { x0 = 0; y0 = 0; x1 = W - 1; y1 = H - 1; }
+  const cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+  const out = document.createElement("canvas");
+  out.width = cw; out.height = ch;
+  const octx = out.getContext("2d")!;
+  const src = image.getContext("2d", { willReadFrequently: true })!.getImageData(x0, y0, cw, ch);
+  const m2 = new Uint8Array(cw * ch);
+  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+    const on = mask[(y + y0) * W + (x + x0)];
+    m2[y * cw + x] = on;
+    if (!on) src.data[(y * cw + x) * 4 + 3] = 0;
+  }
+  octx.putImageData(src, 0, 0);
+  return {
+    canvas: out, mask: m2, width: cw, height: ch, color, torsoHalfWidth: Math.max(4, cw / 4), centerX: cw / 2,
+    person: { image, mask, marks },
+  };
+}
+
+/** Draw an image into a canvas (downscaled to at most `max` px). */
+export function toCanvas(img: HTMLImageElement, max = 1400): HTMLCanvasElement {
+  const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement("canvas");
+  c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+  c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+  return c;
 }
