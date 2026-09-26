@@ -21,3 +21,26 @@ if (params.get("hair")) view.setHair(params.get("hair"));
 if (params.get("half")) stage.setFraming("half");
 (window as any).__closet = { body, view, stage, data };
 (window as any).__ready = true;
+// --- dev: garment preview (?garment=top|dress|skirt|pants)
+import { BodyMeasurer } from "./avatar/measure";
+import { defaultSpec, type GarmentType } from "./garment/spec";
+import { buildGarment } from "./garment/build";
+import { buildAtlas } from "./garment/photo";
+import { GarmentView } from "./viewer/garmentView";
+const gt = params.get("garment") as GarmentType | null;
+if (gt) {
+  const measurer = new BodyMeasurer(data);
+  const pose = body.pose;
+  const t0 = performance.now();
+  const meas = measurer.measure(body);
+  const spec = defaultSpec(gt, meas);
+  if (params.get("sleeve")) spec.sleeve = params.get("sleeve") as any;
+  if (params.get("neck")) spec.neckline = params.get("neck") as any;
+  const gm = buildGarment(spec, { body, measurer, m: meas });
+  console.log("garment build ms", performance.now() - t0, gm.vertexCount);
+  body.setPose(pose);
+  const atlas = buildAtlas(null, { bbox: gm.bbox, torsoHalfWidth: gm.torsoHalfWidth }, "#7a93b8");
+  const gv = new GarmentView(view, spec, gm, atlas);
+  if (params.get("heat")) gv.setHeatmap(true);
+  (window as any).__closet.garment = gv;
+}
