@@ -407,6 +407,12 @@ def main():
         build_proxy(b, "eyes", os.path.join(MH, "eyes", "low-poly"), "眼睛", per_vert_w, bone_index, 512, False, bone_index["head"]),
     ]
 
+    # reference garments (CC0, professionally modelled) used to calibrate generated garment proportions
+    ref_clothes = [build_proxy(b, "ref_" + k, os.path.join(MH, "clothes", k), label, per_vert_w, bone_index, 1024, False,
+                               bone_index["spine03"])
+                   for k, label in [("female_casualsuit01", "參考：T恤牛仔褲"), ("female_casualsuit02", "參考：T恤短褲"),
+                                    ("female_elegantsuit01", "參考：襯衫窄裙"), ("female_sportsuit01", "參考：短版T")]]
+
     skins = []
     for key, label in [("young_asian_female", "亞洲"), ("young_caucasian_female", "白皙"), ("young_african_female", "深膚")]:
         folder = os.path.join(MH, "skins", key)
@@ -432,6 +438,7 @@ def main():
         "skeleton": {"bones": bones, "joints": joints, "jointNames": joint_names},
         "hair": hair,
         "extras": extras,
+        "refClothes": ref_clothes,
         "skin": {"texture": skins[0]["texture"], "options": skins},
         "poses": poses,
     }

@@ -48,3 +48,6 @@ export async function measureFromPhotos(front: HTMLImageElement, heightCm: numbe
   const s = side ? await detectPerson(side) : null;
   return measureFromSilhouette(f.silhouette, f.landmarks, heightCm, s ? { s: s.silhouette, lm: s.landmarks } : undefined);
 }
+
+/** Start loading the pose model in the background (first photo is then much faster). */
+export function preloadPoseModel(): void { getLandmarker().catch(() => { landmarkerPromise = null; }); }

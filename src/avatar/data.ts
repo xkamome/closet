@@ -33,6 +33,8 @@ export interface AvatarData {
   jointNames: string[];
   hair: ProxyData[];
   extras: ProxyData[];
+  /** CC0 professionally modelled garments, used as proportion references */
+  refClothes: ProxyData[];
   skins: { name: string; label: string; texture: string }[];
   poses: Record<string, Record<string, [number, number, number, number]>>;
 }
@@ -75,6 +77,7 @@ export function parseAvatar(meta: any, bin: ArrayBuffer): AvatarData {
     jointNames: meta.skeleton.jointNames,
     hair: meta.hair.map(proxy),
     extras: meta.extras.map(proxy),
+    refClothes: (meta.refClothes ?? []).map(proxy),
     skins: meta.skin.options,
     poses: meta.poses,
   };

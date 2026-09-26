@@ -45,7 +45,9 @@ PACK_PREFIXES = {
     "mh_system_assets_cc0.zip": ("skins/young_asian_female/", "skins/young_caucasian_female/",
                                  "skins/young_african_female/", "hair/bob01/", "hair/bob02/", "hair/long01/",
                                  "hair/ponytail01/", "hair/braid01/", "eyebrows/eyebrow001/",
-                                 "eyelashes/eyelashes01/", "eyes/low-poly/", "eyes/materials/brown"),
+                                 "eyelashes/eyelashes01/", "eyes/low-poly/", "eyes/materials/brown",
+                                 "clothes/female_casualsuit01/", "clothes/female_casualsuit02/",
+                                 "clothes/female_elegantsuit01/", "clothes/female_sportsuit01/"),
     "mh2_additional_cc0.zip": ("poses/",),
 }
 

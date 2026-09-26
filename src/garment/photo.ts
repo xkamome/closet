@@ -55,8 +55,15 @@ export function cutoutGarment(img: CanvasImageSource & { width: number; height: 
   const id = ctx.getImageData(0, 0, W, H);
   const px = id.data;
   const bgMask = floodBackground(px, W, H);
+  // light garment parts (white stripes, pale fabric) can leak into a light background: close the
+  // foreground (dilate + erode) so thin bands inside the garment come back, then fill enclosed holes
+  const fg0 = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) fg0[i] = bgMask[i] ? 0 : 1;
+  const closeR = Math.max(2, Math.round(Math.max(W, H) * 0.02));
+  const closed = erode(dilate(fg0, W, H, closeR), W, H, closeR);
+  const bgClosed = fillHoles(closed, W, H);
   // keep the largest foreground component
-  const fg = largestComponent(bgMask, W, H);
+  const fg = largestComponent(bgClosed, W, H);
   let x0 = W, x1 = 0, y0 = H, y1 = 0;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (fg[y * W + x]) {
     x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
@@ -176,15 +183,16 @@ export function guessGarment(c: Cutout): TypeGuess {
   const top = widthAt(0.12), mid = widthAt(0.5), bot = widthAt(0.95);
   const sleeveSpread = Math.max(widthAt(0.2), widthAt(0.3)) / Math.max(0.05, mid);
   if (gap > H * 0.2 && aspect > 1.2) return { type: "pants", sleeve: "none", confidence: 0.8, reason: "下半部中間有褲管間隙" };
-  if (aspect > 1.55) {
-    const sleeve: Sleeve = sleeveSpread > 1.35 ? (aspect > 2 ? "short" : "long") : "none";
+  // length vs torso width (sleeves excluded): real tees ~1.4, long tops ~1.5, dresses ~2.1
+  if (H / Math.max(1, c.torsoHalfWidth * 2) > 1.8) {
+    const sleeve: Sleeve = sleeveFromReach(c, sleeveSpread);
     return { type: "dress", sleeve, confidence: 0.6, reason: "長度明顯大於寬度" };
   }
   if (top < mid * 0.9 && bot > mid * 1.1 && aspect < 1.5 && sleeveSpread < 1.2) {
     return { type: "skirt", sleeve: "none", confidence: 0.6, reason: "上窄下寬、沒有袖子" };
   }
-  const sleeve: Sleeve = sleeveSpread > 1.6 ? "long" : sleeveSpread > 1.2 ? "short" : "none";
-  return { type: "top", sleeve, confidence: 0.55, reason: sleeve === "none" ? "上身款、未偵測到袖子" : "上身款、有袖子" };
+  const sleeve = sleeveFromReach(c, sleeveSpread);
+  return { type: "top", sleeve, confidence: 0.55, reason: sleeve === "none" ? "上身款、未偵測到袖子" : `上身款、${SLEEVE_TEXT[sleeve]}` };
 }
 
 export interface AtlasOptions {
@@ -204,13 +212,9 @@ export function buildAtlas(c: Cutout | null, opts: AtlasOptions, fallbackColor =
   const base = c ? `rgb(${c.color.map((v) => Math.round(v)).join(",")})` : fallbackColor;
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, S * 2, S);
-  // subtle fabric noise so plain garments don't look like plastic
-  const noise = ctx.getImageData(0, 0, S * 2, S);
-  for (let i = 0; i < noise.data.length; i += 4) {
-    const n = (Math.random() - 0.5) * 10;
-    noise.data[i] += n; noise.data[i + 1] += n; noise.data[i + 2] += n;
-  }
-  ctx.putImageData(noise, 0, 0);
+  // subtle fabric noise so plain garments don't look like plastic (a small tile, repeated: no big pixel loops)
+  ctx.fillStyle = ctx.createPattern(noiseTile(), "repeat")!;
+  ctx.fillRect(0, 0, S * 2, S);
   if (!c) return cnv;
 
   const { bbox } = opts;
@@ -426,4 +430,153 @@ export function toCanvas(img: HTMLImageElement, max = 1400): HTMLCanvasElement {
   c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
   c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
   return c;
+}
+
+let noiseCache: HTMLCanvasElement | null = null;
+function noiseTile(): HTMLCanvasElement {
+  if (noiseCache) return noiseCache;
+  const T = 128;
+  const c = document.createElement("canvas");
+  c.width = c.height = T;
+  const ctx = c.getContext("2d")!;
+  const img = ctx.createImageData(T, T);
+  for (let i = 0; i < T * T; i++) {
+    const n = Math.random();
+    const v = n < 0.5 ? 0 : 255;
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
+    img.data[i * 4 + 3] = Math.round(Math.abs(n - 0.5) * 2 * 10); // up to ~4% light/dark speckle
+  }
+  ctx.putImageData(img, 0, 0);
+  return (noiseCache = c);
+}
+
+/** Square dilation with radius r using running-window counts (O(W*H)). */
+function dilate(m: Uint8Array, W: number, H: number, r: number): Uint8Array {
+  const tmp = new Uint8Array(W * H), out = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    let c = 0;
+    for (let x = 0; x < Math.min(W, r); x++) c += m[y * W + x];
+    for (let x = 0; x < W; x++) {
+      if (x + r < W) c += m[y * W + x + r];
+      if (x - r - 1 >= 0) c -= m[y * W + x - r - 1];
+      tmp[y * W + x] = c > 0 ? 1 : 0;
+    }
+  }
+  for (let x = 0; x < W; x++) {
+    let c = 0;
+    for (let y = 0; y < Math.min(H, r); y++) c += tmp[y * W + x];
+    for (let y = 0; y < H; y++) {
+      if (y + r < H) c += tmp[(y + r) * W + x];
+      if (y - r - 1 >= 0) c -= tmp[(y - r - 1) * W + x];
+      out[y * W + x] = c > 0 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+function erode(m: Uint8Array, W: number, H: number, r: number): Uint8Array {
+  const inv = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) inv[i] = m[i] ? 0 : 1;
+  // pixels outside the image count as background, so the border erodes correctly
+  const d = dilate(inv, W, H, r);
+  const out = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const edge = x < r || y < r || x >= W - r || y >= H - r;
+    out[y * W + x] = d[y * W + x] || (edge && !m[y * W + x]) ? 0 : 1;
+  }
+  return out;
+}
+
+/** Background mask where only background connected to the image border stays background. */
+function fillHoles(fg: Uint8Array, W: number, H: number): Uint8Array {
+  const bg = new Uint8Array(W * H);
+  const stack: number[] = [];
+  const seed = (i: number) => { if (!fg[i] && !bg[i]) { bg[i] = 1; stack.push(i); } };
+  for (let x = 0; x < W; x++) { seed(x); seed((H - 1) * W + x); }
+  for (let y = 0; y < H; y++) { seed(y * W); seed(y * W + W - 1); }
+  while (stack.length) {
+    const i = stack.pop()!;
+    const x = i % W, y = (i / W) | 0;
+    if (x > 0) seed(i - 1);
+    if (x < W - 1) seed(i + 1);
+    if (y > 0) seed(i - W);
+    if (y < H - 1) seed(i + W);
+  }
+  return bg;
+}
+
+const SLEEVE_TEXT: Record<Sleeve, string> = { none: "無袖", short: "袖子短", elbow: "袖子到手肘", long: "袖子長" };
+
+/**
+ * Sleeve length from how far the sleeves stick out past the torso (flat-lay photos lay sleeves out
+ * sideways, so width alone can't tell short from long): reach relative to the garment length.
+ */
+function sleeveFromReach(c: Cutout, _spread: number): Sleeve {
+  const { mask, width: W, height: H } = c;
+  const cx = Math.round(c.centerX), half = c.torsoHalfWidth;
+  // shoulder points: torso edges in the top rows
+  let topY = 0;
+  while (topY < H && !mask[topY * W + cx]) topY++;
+  const shoulderY = topY + H * 0.04;
+  let far = 0;
+  for (let y = 0; y < H; y++) {
+    // run containing the centre column in this row (the torso)
+    let l = cx, r = cx;
+    const onCentre = mask[y * W + cx] === 1;
+    if (onCentre) {
+      while (l > 0 && mask[y * W + l - 1]) l--;
+      while (r < W - 1 && mask[y * W + r + 1]) r++;
+    }
+    for (let x = 0; x < W; x++) {
+      if (!mask[y * W + x]) continue;
+      const outside = Math.abs(x - cx) > half * 1.08;
+      if (!outside) continue;
+      const detached = !onCentre || x < l || x > r; // sleeve hanging beside the torso
+      if (y > H * 0.45 && !detached) continue; // flared hems are attached to the torso run
+      const sx = x < cx ? cx - half : cx + half;
+      far = Math.max(far, Math.hypot(x - sx, y - shoulderY));
+    }
+  }
+  const ratio = far / H;
+  return ratio < 0.12 ? "none" : ratio < 0.42 ? "short" : ratio < 0.62 ? "elbow" : "long";
+}
+
+/**
+ * Cheap pre-check before running the (heavy) person models: does the foreground contain a clear
+ * amount of skin, including near its top (a face)? Product flat-lays usually don't.
+ */
+export function looksLikePerson(img: CanvasImageSource & { width: number; height: number }): boolean {
+  const k = Math.min(1, 220 / Math.max(img.width, img.height));
+  const W = Math.max(1, Math.round(img.width * k)), H = Math.max(1, Math.round(img.height * k));
+  const cnv = document.createElement("canvas");
+  cnv.width = W; cnv.height = H;
+  const ctx = cnv.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(img, 0, 0, W, H);
+  const px = ctx.getImageData(0, 0, W, H).data;
+  const bg = floodBackground(px, W, H);
+  let fg = 0, skin = 0, top = -1, bottom = -1;
+  const isSkin = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (bg[i]) continue;
+    fg++;
+    if (top < 0) top = y;
+    bottom = y;
+    const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+    const Y = 0.299 * r + 0.587 * g + 0.114 * b;
+    const cr = 128 + 0.5 * r - 0.4187 * g - 0.0813 * b;
+    const cb = 128 - 0.1687 * r - 0.3313 * g + 0.5 * b;
+    if (Y > 60 && cr > 136 && cr < 175 && cb > 85 && cb < 130) { skin++; isSkin[i] = 1; }
+  }
+  if (!fg || skin / fg < 0.04) return false;
+  // a face: skin in the top fifth of the figure
+  let headSkin = 0, headFg = 0;
+  const limit = top + (bottom - top) * 0.2;
+  for (let y = top; y <= limit; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (bg[i]) continue;
+    headFg++;
+    headSkin += isSkin[i];
+  }
+  return headFg > 0 && headSkin / headFg > 0.08;
 }

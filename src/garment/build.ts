@@ -10,7 +10,7 @@
 import type { Body } from "../avatar/body";
 import { computeNormals } from "../avatar/body";
 import type { BodyMeasurer, Measurements } from "../avatar/measure";
-import { convexHull, perimeter, slice } from "../avatar/measure";
+import { convexHull, perimeter, regionTriangles, slice } from "../avatar/measure";
 import { collide, taubinSmooth } from "./collide";
 import type { GarmentSpec } from "./spec";
 
@@ -126,8 +126,46 @@ function rayHull(hull: number[], cx: number, cz: number, dx: number, dz: number)
 
 interface Ring { y: number; hull: number[]; cx: number; cz: number; P: number }
 
+const sub = (a: number[], b: number[]) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const scale = (a: number[], k: number) => [a[0] * k, a[1] * k, a[2] * k];
+const cross = (a: number[], b: number[]) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+/** Ordered boundary loops (edges used by one triangle) of a triangle mesh. */
+export function boundaryLoops(tris: number[]): number[][] {
+  const count = new Map<number, number>();
+  const key = (a: number, b: number) => (a < b ? a * 4194304 + b : b * 4194304 + a);
+  for (let t = 0; t < tris.length; t += 3) {
+    for (let k = 0; k < 3; k++) {
+      const kk = key(tris[t + k], tris[t + ((k + 1) % 3)]);
+      count.set(kk, (count.get(kk) ?? 0) + 1);
+    }
+  }
+  const next = new Map<number, number>();
+  for (let t = 0; t < tris.length; t += 3) {
+    for (let k = 0; k < 3; k++) {
+      const a = tris[t + k], b = tris[t + ((k + 1) % 3)];
+      if (count.get(key(a, b)) === 1) next.set(a, b);
+    }
+  }
+  const loops: number[][] = [];
+  const seen = new Set<number>();
+  for (const start of next.keys()) {
+    if (seen.has(start)) continue;
+    const loop: number[] = [];
+    let v: number | undefined = start;
+    while (v !== undefined && !seen.has(v)) { seen.add(v); loop.push(v); v = next.get(v); }
+    if (loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+
 export interface UnderLayer { pos: Float32Array; normals: Float32Array; count: number }
-export interface BuildContext { body: Body; measurer: BodyMeasurer; m: Measurements; layer?: number; under?: UnderLayer[] }
+export interface BuildContext {
+  body: Body; measurer: BodyMeasurer; m: Measurements; layer?: number; under?: UnderLayer[];
+  /** optional: filled with per-stage milliseconds (diagnostics) */
+  timings?: Record<string, number>;
+}
 
 export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh {
   const { body, measurer, m } = ctx;
@@ -141,6 +179,8 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const drape = spec.fabric.drape;
   const g = (k: keyof GarmentSpec["m"]) => (spec.m[k] !== undefined ? spec.m[k]! / 100 : undefined);
 
+  const __t0 = performance.now(); let __tl = __t0;
+  const stage = (n: string) => { const t = performance.now(); if (ctx.timings) ctx.timings[n] = (ctx.timings[n] ?? 0) + t - __tl; __tl = t; };
   // ---------- landmarks
   const bustY = Y(m.bustY), waistY = Y(m.waistY), hipY = Y(m.hipY), crotchY = Y(m.crotchY), neckY = Y(m.neckY);
   const waistline = spec.rise === "high" ? waistY + 0.03 : spec.rise === "low" ? waistY - 0.06 : waistY;
@@ -153,6 +193,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   // the upper piece tucks 3cm under the skirt/cone so the junction never shows a gap
   const upperBottom = needsCone ? Math.max(coneTop - 0.03, crotchY + 0.04) : hemY;
 
+  stage("before-body");
   // ---------- body girths per level
   const bust = m.bust / 100, bodyWaist = m.waist / 100, bodyHip = m.hips / 100;
   const Gc = g("chest") ?? bust + 0.1;
@@ -210,6 +251,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     return bodyGirthAt(y) + e;
   };
 
+  stage("before-rings");
   // ---------- rings (hull per height) for the torso region
   const torsoTris = spec.type === "pants" || isBottom ? measurer.torsoLegs : measurer.torso;
   const ringCache = new Map<number, Ring>();
@@ -246,6 +288,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     return r;
   };
 
+  stage("before-working");
   // ---------- working mesh from body triangles
   const bones = data.bones.map((b) => b.name);
   const armBone = bones.map((b) => ARM_RE.test(b));
@@ -257,6 +300,47 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const idx = data.body.index, src = data.body.src;
   for (let t = 0; t < idx.length; t += 3) srcTris.push(src[idx[t]], src[idx[t + 1]], src[idx[t + 2]]);
   const restNormals = computeNormals(rest.subarray(0, nBody * 3), Uint32Array.from(srcTris), nBody);
+
+  // skin weights for generated vertices: inverse-distance blend of the nearest arm/torso body vertices
+  const knnHash = new Map<number, number[]>();
+  const KC = 0.035;
+  const kh = (x: number, y: number, z: number) => ((x + 256) * 512 + (y + 256)) * 512 + (z + 256);
+  for (let i = 0; i < nBody; i++) {
+    const rg = measurer.regions[i];
+    if (rg !== 0 && rg !== 1) continue;
+    const k = kh(Math.floor(rest[i * 3] / KC), Math.floor(rest[i * 3 + 1] / KC), Math.floor(rest[i * 3 + 2] / KC));
+    const c = knnHash.get(k);
+    if (c) c.push(i); else knnHash.set(k, [i]);
+  }
+  const knnSkin = (x: number, y: number, z: number, anchor: Skin, anchorW: number): Skin => {
+    const cx = Math.floor(x / KC), cy = Math.floor(y / KC), cz = Math.floor(z / KC);
+    const best: [number, number][] = [];
+    for (let r = 1; r <= 4 && best.length < 6; r++) {
+      best.length = 0;
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) {
+        for (const i of knnHash.get(kh(cx + dx, cy + dy, cz + dz)) ?? []) {
+          const d2 = (rest[i * 3] - x) ** 2 + (rest[i * 3 + 1] - y) ** 2 + (rest[i * 3 + 2] - z) ** 2;
+          if (best.length < 6 || d2 < best[best.length - 1][0]) {
+            best.push([d2, i]); best.sort((p, q) => p[0] - q[0]); if (best.length > 6) best.pop();
+          }
+        }
+      }
+    }
+    const acc = new Map<number, number>();
+    for (const [d2, i] of best) {
+      const w = 1 / (Math.sqrt(d2) + 0.01);
+      for (let k = 0; k < 4; k++) {
+        const bw = data.body.skinW[i * 4 + k];
+        if (bw) acc.set(data.body.skinIdx[i * 4 + k], (acc.get(data.body.skinIdx[i * 4 + k]) ?? 0) + bw * w);
+      }
+    }
+    // near the armhole keep the armhole's own weights so the seam doesn't tear
+    const tot = [...acc.values()].reduce((a, b) => a + b, 0) || 1;
+    const out = new Map<number, number>();
+    for (const [b, w] of acc) out.set(b, (w / tot) * anchorW);
+    anchor.i.forEach((b, k) => anchor.w[k] && out.set(b, (out.get(b) ?? 0) + anchor.w[k] * (1 - anchorW)));
+    return top4(out);
+  };
 
   let work: Work = { pos: [], nor: [], skin: [], tris: [] };
   {
@@ -298,38 +382,38 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const sleeveLen = spec.sleeve === "none" ? -0.035 + shoulderDrop
     : shoulderDrop + (g("sleeveLength") ?? { short: 0.16, elbow: 0.3, long: 0.58 }[spec.sleeve]);
 
+  let necklineInfo: { nb: number[]; hw: number } | null = null;
+  stage("before-clipping");
   // ---------- clipping
   if (!isBottom) {
-    // neckline
+    // neckline: a front-view curve (pattern-style front/back drop and half width), blended front<->back
     const nb = body.joint("neck01____head");
-    const neckR = Math.max(0.055, (m.neck / 100) / TAU * 1.25);
-    const shape = {
-      crew: { rx: neckR + 0.012, front: 0.07, back: 0.055, ry: 0.05 },
-      v: { rx: neckR + 0.015, front: 0.075, back: 0.055, ry: 0.05 },
-      scoop: { rx: neckR + 0.035, front: 0.1, back: 0.065, ry: 0.11 },
-      boat: { rx: neckR + 0.075, front: 0.075, back: 0.07, ry: 0.035 },
+    const sc = m.height / 160;
+    const neckR = (m.neck / 100) / TAU;
+    const NL = {
+      crew: { hw: neckR + 0.028, df: 0.035, db: 0.006, v: false },
+      v: { hw: neckR + 0.03, df: 0.13, db: 0.01, v: true },
+      scoop: { hw: neckR + 0.05, df: 0.1, db: 0.025, v: false },
+      boat: { hw: neckR + 0.095, df: 0.03, db: 0.03, v: false },
     }[spec.neckline];
-    const vDepth = 0.17;
-    const cy = nb.y - 0.012;
+    necklineInfo = { nb: [nb.x, nb.y, nb.z], hw: NL.hw };
     work = clip(work, (v) => {
-      const p = P(work, v);
-      const dx = p[0] - nb.x, dy = p[1] - cy, dz = p[2] - nb.z;
       if (frac(work.skin[v], headBone) > 0.55) return -1;
-      const rz = dz > 0 ? shape.front : shape.back;
-      const ry = dz > 0 && spec.neckline === "scoop" ? shape.ry * 1.4 : shape.ry;
-      let f = Math.hypot(dx / shape.rx, dy / ry, dz / rz) - 1;
-      if (spec.neckline === "v" && dz > 0.02) {
-        const yb = cy - vDepth;
-        const w = shape.rx * Math.min(1, Math.max(0, (p[1] - yb) / (cy - yb)));
-        f = Math.min(f, p[1] < yb ? 1 : (Math.abs(dx) - w) * 12);
-      }
-      return f;
+      const p = P(work, v);
+      const ax = Math.abs(p[0] - nb.x);
+      const u = ax / NL.hw;
+      const g = u >= 1 ? 0 : NL.v ? 1 - u : Math.sqrt(1 - u * u);
+      const wf = Math.min(1, Math.max(0, (p[2] - nb.z + 0.03) / 0.06));
+      const drop = (NL.df * wf + NL.db * (1 - wf)) * g * sc;
+      const yc = nb.y - drop + Math.max(0, ax - NL.hw) * 3;
+      return yc - p[1];
     });
-    // sleeves / armholes
+    // armholes: the torso piece ends at the arm/torso crease and, over the shoulder, at the garment's
+    // shoulder point (further down the arm for dropped shoulders); sleeves are separate tubes.
+    const armholeT = spec.sleeve === "none" ? shoulderDrop - 0.025 : shoulderDrop;
     work = clip(work, (v) => {
-      const s = work.skin[v];
-      if (frac(s, armBone) < 0.5) return 0.05;
-      return sleeveLen - armT(P(work, v));
+      const af = frac(work.skin[v], armBone);
+      return Math.max(0.5 - af, armholeT - armT(P(work, v)));
     });
   }
   if (spec.cut?.topY !== undefined) {
@@ -348,6 +432,27 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   // skirts: nothing from the legs below the crotch belongs to the upper piece
   if (spec.type === "skirt") work = clip(work, (v) => (frac(work.skin[v], legBone) > 0.6 ? work.pos[v * 3 + 1] - crotchY : 1));
 
+  stage("before-armhole");
+  // ---------- armhole loops (ordered boundary vertices) for the sleeves
+  const armholes: { side: 1 | -1; loop: number[] }[] = [];
+  if (!isBottom && spec.sleeve !== "none" && spec.cut?.topY === undefined) {
+    for (const loop of boundaryLoops(work.tris)) {
+      let cx = 0, cy = 0;
+      for (const v of loop) { cx += work.pos[v * 3]; cy += work.pos[v * 3 + 1]; }
+      cx /= loop.length; cy /= loop.length;
+      const side = cx >= 0 ? 1 : -1;
+      const h = hum[side > 0 ? 0 : 1];
+      if (Math.abs(cx) > Math.abs(h.x) * 0.55 && cy < h.y + 0.08 && cy > h.y - 0.25 && loop.length >= 8) {
+        const prev = armholes.find((a) => a.side === side);
+        if (!prev || loop.length > prev.loop.length) {
+          if (prev) armholes.splice(armholes.indexOf(prev), 1);
+          armholes.push({ side, loop });
+        }
+      }
+    }
+  }
+
+  stage("before-push");
   // ---------- push the surface out to the garment girth
   const nv = work.skin.length;
   const strainArr: number[] = new Array(nv).fill(1);
@@ -398,7 +503,6 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     return { r: grid[L][b0] * (1 - t) + grid[L][b1] * t, ring: gridRing[L] };
   };
 
-  const upperArmG = g("upperArm") ?? m.upperArm / 100 + 0.09;
   const legOpen = g("legOpening") ?? 0.4;
   const thighG = g("thigh") ?? m.thigh / 100 + 0.08;
   const legRingCache = new Map<number, number>();
@@ -420,15 +524,8 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     // baseline: offset along the normal by fabric thickness
     let x = p[0] + n[0] * th, y = p[1] + n[1] * th * 0.6, z = p[2] + n[2] * th;
     if (!isBottom && armF >= 0.5) {
-      // sleeve: extra ease that flares toward the opening
-      const t = armT(p);
-      const armG = Math.max(0.18, (m.upperArm / 100) * (1 - Math.max(0, t - 0.1) * 0.4));
-      const opening = g("sleeveOpening") ?? upperArmG * (spec.sleeve === "long" ? 0.75 : 1.05);
-      const tt = Math.min(1, Math.max(0, (t - shoulderDrop) / Math.max(0.05, sleeveLen - shoulderDrop)));
-      const sg = upperArmG + (opening - upperArmG) * tt;
-      const e = Math.max(0, (sg - armG) / TAU) * Math.min(1, armF * 1.5 - 0.5);
-      x += n[0] * e; y += n[1] * e * 0.3; z += n[2] * e;
-      strainArr[v] = sg / armG;
+      // shoulder cap left on the torso piece: fabric thickness only (sleeves are separate tubes)
+      strainArr[v] = 1.05;
     } else if (spec.type === "pants" && p[1] < crotchY + 0.06) {
       const lg = legGirth(Math.min(p[1], crotchY - 0.01));
       const tk = Math.min(1, Math.max(0, (crotchY - p[1]) / Math.max(0.1, crotchY - hemY)));
@@ -451,15 +548,17 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     work.pos[v * 3] = x; work.pos[v * 3 + 1] = y; work.pos[v * 3 + 2] = z;
   }
 
+  stage("before-cone");
   // ---------- cone piece (samples the same radius grid, so it joins the upper piece seamlessly)
-  let coneFreeFrom = Infinity;
+  let coneFreeFrom = Infinity, coneBase = -1;
   if (needsCone) {
-    const N = 96;
-    const step = 0.01;
+    const N = 72; // 9 fold lobes x 8 samples
+    const step = 0.015;
     const top = upperBottom;
     const count = Math.max(2, Math.ceil((top - hemY) / step));
     const phase = 0.7;
     const base = work.skin.length;
+    coneBase = base;
     coneFreeFrom = base + N * 3; // the top three rings stay attached to the hips
     const ys: number[] = [];
     for (let L = 0; L <= count; L++) ys.push(top - ((top - hemY) * L) / count);
@@ -512,18 +611,29 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
         const x = ACX + Math.sin(a) * r, z = ACZ + Math.cos(a) * r;
         work.pos.push(x, y, z);
         work.nor.push(Math.sin(a), 0, Math.cos(a));
-        const best = nearest6(x, y, z);
-        const acc = new Map<number, number>();
-        for (const [d2, i] of best) {
-          const w = 1 / (Math.sqrt(d2) + 0.01);
-          for (let k = 0; k < 4; k++) {
-            const bw = data.body.skinW[i * 4 + k];
-            if (bw) acc.set(data.body.skinIdx[i * 4 + k], (acc.get(data.body.skinIdx[i * 4 + k]) ?? 0) + bw * w);
+        // exact kNN skinning on every 3rd ring (and the last); rings in between are blended afterwards
+        if (L % 3 === 0 || L === count) {
+          const best = nearest6(x, y, z);
+          const acc = new Map<number, number>();
+          for (const [d2, i] of best) {
+            const w = 1 / (Math.sqrt(d2) + 0.01);
+            for (let k = 0; k < 4; k++) {
+              const bw = data.body.skinW[i * 4 + k];
+              if (bw) acc.set(data.body.skinIdx[i * 4 + k], (acc.get(data.body.skinIdx[i * 4 + k]) ?? 0) + bw * w);
+            }
           }
+          work.skin.push(top4(acc));
+        } else {
+          work.skin.push({ i: [0, 0, 0, 0], w: [0, 0, 0, 0] }); // placeholder
         }
-        work.skin.push(top4(acc));
         strainArr.push(girthAt(y) / Math.max(0.2, ring.P));
       }
+    }
+    for (let L = 1; L < count; L++) {
+      if (L % 3 === 0) continue;
+      const L0 = L - (L % 3), L1 = Math.min(count, L0 + 3);
+      const t = (L - L0) / Math.max(1, L1 - L0);
+      for (let b = 0; b < N; b++) work.skin[base + L * N + b] = mergeSkin(work.skin[base + L0 * N + b], work.skin[base + L1 * N + b], t);
     }
     for (let L = 0; L < count; L++) {
       for (let b = 0; b < N; b++) {
@@ -534,6 +644,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     }
   }
 
+  stage("before-fabric");
   // ---------- fabric tension: smooth away body micro-detail, then keep clear of the skin
   {
     // pin open edges (hem, neckline, sleeve ends) so they don't shrink
@@ -551,9 +662,195 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     taubinSmooth(work.pos, work.tris, iters, 0.55, -0.58, (v) => border[v] === 1);
     collide(work.pos, work.skin.length, rest, restNormals, nBody, th);
     // outer layers (a top worn over a skirt / trousers) stay outside the garments underneath
-    for (const u of ctx.under ?? []) collide(work.pos, work.skin.length, u.pos, u.normals, u.count, 0.006);
+    for (const u of ctx.under ?? []) collide(work.pos, work.skin.length, u.pos, u.normals, u.count, 0.006, 0.02);
   }
 
+  const torsoTriCount = work.tris.length;
+  stage("before-which");
+  // ---------- which vertices the cloth relaxation may move (0 = follows the skinned body exactly)
+  const pinned = new Uint8Array(work.skin.length);
+  {
+    const shoulderY = Y(m.shoulderY);
+    for (let v = 0; v < work.skin.length; v++) {
+      const y = work.pos[v * 3 + 1];
+      if (!isBottom && y > shoulderY - 0.035) pinned[v] = 1;
+      if (isBottom && y > waistline - 0.025) pinned[v] = 1;
+      if (spec.cut) pinned[v] = 1; // underwear hugs the body
+    }
+    for (const { loop } of armholes) for (const v of loop) pinned[v] = 1;
+  }
+  const extraPinned: number[] = [];
+  stage("before-sleeves");
+  // ---------- sleeves: tubes around the arm, first ring = the (final) armhole edge
+  const armTris = armholes.length ? [regionTriangles(data, measurer.regions, [1], 1), regionTriangles(data, measurer.regions, [1], -1)] : [];
+  for (const { side, loop } of armholes) {
+    const si = side > 0 ? 0 : 1;
+    const H = hum[si], E = elb[si], Wr = wri[si];
+    const upLen = H.distanceTo(E), loLen = E.distanceTo(Wr);
+    const axisAt = (t: number) => {
+      // point + direction on the arm polyline at arc length t from the humeral head
+      if (t <= upLen) {
+        const d = [(E.x - H.x) / upLen, (E.y - H.y) / upLen, (E.z - H.z) / upLen];
+        return { c: [H.x + d[0] * t, H.y + d[1] * t, H.z + d[2] * t], d };
+      }
+      const d = [(Wr.x - E.x) / loLen, (Wr.y - E.y) / loLen, (Wr.z - E.z) / loLen];
+      const tt = t - upLen;
+      return { c: [E.x + d[0] * tt, E.y + d[1] * tt, E.z + d[2] * tt], d };
+    };
+    const a0 = axisAt(0).d;
+    // frame: e1 = "top of the arm" (perpendicular, pointing up), e2 = front/back
+    const upv = [0, 1, 0];
+    let e1 = sub(upv, scale(a0, dot(upv, a0)));
+    e1 = scale(e1, 1 / Math.hypot(e1[0], e1[1], e1[2]));
+    const e2 = cross(a0, e1);
+    const L = loop.map((v) => [work.pos[v * 3], work.pos[v * 3 + 1], work.pos[v * 3 + 2]]);
+    const angOf = (p: number[]) => {
+      const q = sub(p, [H.x, H.y, H.z]);
+      return Math.atan2(dot(q, e2), dot(q, e1));
+    };
+    // resample the loop at N evenly spaced angles around the arm axis
+    const N = 40;
+    const phis = L.map(angOf);
+    const ring0: number[][] = [];
+    const ring0Skin: Skin[] = [];
+    for (let j = 0; j < N; j++) {
+      const target = -Math.PI + (j / N) * TAU;
+      let best = 0, bestErr = Infinity, bestT = 0;
+      for (let k = 0; k < L.length; k++) {
+        const k2 = (k + 1) % L.length;
+        let p0 = phis[k], p1 = phis[k2];
+        if (Math.abs(p1 - p0) > Math.PI) { if (p1 < p0) p1 += TAU; else p0 += TAU; }
+        let tg = target;
+        while (tg < Math.min(p0, p1) - 1e-9) tg += TAU;
+        while (tg > Math.max(p0, p1) + 1e-9) tg -= TAU;
+        const span = p1 - p0;
+        const f = Math.abs(span) < 1e-9 ? 0 : (tg - p0) / span;
+        const err = f < 0 ? -f : f > 1 ? f - 1 : 0;
+        if (err < bestErr) { bestErr = err; best = k; bestT = Math.min(1, Math.max(0, f)); }
+      }
+      const k2 = (best + 1) % L.length;
+      ring0.push([0, 1, 2].map((c) => L[best][c] + (L[k2][c] - L[best][c]) * bestT));
+      ring0Skin.push(mergeSkin(work.skin[loop[best]], work.skin[loop[k2]], bestT));
+    }
+    // girths along the sleeve
+    const armG0 = m.upperArm / 100;
+    const G0 = Math.max(g("upperArm") ?? armG0 + (spec.silhouette === "fitted" ? 0.05 : 0.1), armG0 + TAU * th * 2);
+    const wristG = 0.155 * (m.height / 160);
+    const Gend = g("sleeveOpening") ?? (spec.sleeve === "long" ? wristG + 0.07 : spec.sleeve === "elbow" ? G0 * 0.92 : G0 * 1.02);
+    const tEnd = Math.max(0.05, sleeveLen);
+    const armGirthAt = (t: number) => {
+      if (t <= upLen) return armG0 * (1 - 0.12 * (t / upLen));
+      return armG0 * 0.88 + (wristG - armG0 * 0.88) * Math.min(1, (t - upLen) / loLen);
+    };
+    const K = Math.max(6, Math.ceil(tEnd / 0.015));
+    const base = work.skin.length;
+    const gdir = [0, -1, 0];
+    for (let k = 0; k <= K; k++) {
+      const sK = k / K;
+      const t = tEnd * sK;
+      const { c, d } = axisAt(t);
+      let f1 = sub(upv, scale(d, dot(upv, d)));
+      f1 = scale(f1, 1 / Math.hypot(f1[0], f1[1], f1[2]));
+      const f2 = cross(d, f1);
+      // the arm's own cross-section (deltoid, biceps...) so the sleeve cap is round, not a cylinder
+      const armPts = slice(rest, armTris[si], c, d, f1, f2);
+      const hull = armPts.length >= 6 ? convexHull(armPts) : [];
+      const Parm = hull.length >= 6 ? perimeter(hull) : armGirthAt(t);
+      const G = Math.max(G0 + (Gend - G0) * sK, Parm + TAU * th * 1.5);
+      const ease = Math.max(th * 1.2, (G - Parm) / TAU);
+      // loose fabric rests on top of the arm and hangs below it
+      let gp = sub(gdir, scale(d, dot(gdir, d)));
+      const gl = Math.hypot(gp[0], gp[1], gp[2]) || 1;
+      gp = scale(gp, Math.max(0, ease - th) * 0.8 / gl);
+      const w = sK <= 0 ? 0 : Math.min(1, sK / 0.35) ** 2 * (3 - 2 * Math.min(1, sK / 0.35));
+      for (let j = 0; j < N; j++) {
+        const phi = -Math.PI + (j / N) * TAU;
+        const rh = hull.length >= 6 ? rayHull(hull, 0, 0, Math.cos(phi), Math.sin(phi)) : armGirthAt(t) / TAU;
+        const r = rh + ease;
+        const tube = [0, 1, 2].map((q) => c[q] + gp[q] + r * (Math.cos(phi) * f1[q] + Math.sin(phi) * f2[q]));
+        const pnt = [0, 1, 2].map((q) => ring0[j][q] + (tube[q] - ring0[j][q]) * w);
+        work.pos.push(pnt[0], pnt[1], pnt[2]);
+        const nrm = sub(pnt, c);
+        const nl = Math.hypot(nrm[0], nrm[1], nrm[2]) || 1;
+        work.nor.push(nrm[0] / nl, nrm[1] / nl, nrm[2] / nl);
+        work.skin.push(k === 0 ? ring0Skin[j] : knnSkin(pnt[0], pnt[1], pnt[2], ring0Skin[j], w));
+        strainArr.push(G / Parm);
+      }
+    }
+    for (let k = 0; k < K; k++) {
+      for (let j = 0; j < N; j++) {
+        const a = base + k * N + j, c2 = base + k * N + ((j + 1) % N);
+        work.tris.push(a, c2, a + N, c2, c2 + N, a + N);
+      }
+    }
+    for (let q = base; q < base + N * 2; q++) extraPinned.push(q);
+  }
+  stage("before-rib");
+  // ---------- rib collar: a ~1.5 cm band standing on the neckline
+  if (necklineInfo && spec.cut?.topY === undefined) {
+    const nb = necklineInfo.nb;
+    const loops = boundaryLoops(work.tris.slice(0, torsoTriCount));
+    let neck: number[] | null = null, bestD = Infinity;
+    for (const loop of loops) {
+      let cx = 0, cy = 0;
+      for (const v of loop) { cx += work.pos[v * 3]; cy += work.pos[v * 3 + 1]; }
+      cx /= loop.length; cy /= loop.length;
+      const dd = Math.abs(cx - nb[0]) + Math.abs(cy - nb[1]);
+      if (Math.abs(cx - nb[0]) < 0.04 && cy > nb[1] - 0.2 && dd < bestD) { bestD = dd; neck = loop; }
+    }
+    if (neck) {
+      const bandH = 0.015 * (m.height / 160);
+      const base = work.skin.length;
+      const n = neck.length;
+      // relax the jagged clip edge along the loop before standing the band on it
+      let sm = neck.map((v) => [work.pos[v * 3], work.pos[v * 3 + 1], work.pos[v * 3 + 2]]);
+      for (let it = 0; it < 6; it++) {
+        sm = sm.map((p, i) => {
+          const a = sm[(i + n - 1) % n], b = sm[(i + 1) % n];
+          return [0, 1, 2].map((c) => (a[c] + 2 * p[c] + b[c]) / 4);
+        });
+      }
+      // direction that continues the fabric across the neckline edge (away from the garment interior)
+      const nbrs = new Map<number, Set<number>>();
+      for (let t = 0; t < torsoTriCount; t += 3) {
+        for (let k = 0; k < 3; k++) {
+          const a = work.tris[t + k];
+          if (!nbrs.has(a)) nbrs.set(a, new Set());
+          nbrs.get(a)!.add(work.tris[t + ((k + 1) % 3)]).add(work.tris[t + ((k + 2) % 3)]);
+        }
+      }
+      const onLoop = new Set(neck);
+      for (let i = 0; i < n; i++) {
+        const v = neck[i];
+        const p = sm[i];
+        let ox = 0, oy = 0, oz = 0;
+        for (const q of nbrs.get(v) ?? []) {
+          if (onLoop.has(q)) continue;
+          ox += work.pos[v * 3] - work.pos[q * 3]; oy += work.pos[v * 3 + 1] - work.pos[q * 3 + 1]; oz += work.pos[v * 3 + 2] - work.pos[q * 3 + 2];
+        }
+        // mostly upward (a rib band stands up around the neck), bent to follow the surface
+        const ol = Math.hypot(ox, oy, oz) || 1;
+        let dx = (ox / ol) * 0.6, dy = (oy / ol) * 0.6 + 0.4, dz = (oz / ol) * 0.6;
+        const dl = Math.hypot(dx, dy, dz) || 1;
+        dx /= dl; dy /= dl; dz /= dl;
+        const toAxis = [nb[0] - p[0], 0, nb[2] - p[2]];
+        const tl = Math.hypot(toAxis[0], toAxis[2]) || 1;
+        const q = [p[0] + dx * bandH, p[1] + dy * bandH, p[2] + dz * bandH];
+        work.pos.push(q[0], q[1], q[2]);
+        work.nor.push(-toAxis[0] / tl, 0, -toAxis[2] / tl);
+        work.skin.push(work.skin[v]);
+        strainArr.push(1.05);
+      }
+      for (let i = 0; i < n; i++) {
+        const a = neck[i], b = neck[(i + 1) % n], qa = base + i, qb = base + ((i + 1) % n);
+        work.tris.push(a, b, qb, a, qb, qa);
+        extraPinned.push(qa, a);
+      }
+    }
+  }
+  if (armholes.length || necklineInfo) collide(work.pos, work.skin.length, rest, restNormals, nBody, th);
+
+  stage("before-final");
   // ---------- final buffers: split by facing (front / back) for the photo atlas
   const count = work.skin.length;
   let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
@@ -569,6 +866,9 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   }
   const cx = 0;
   const outPos: number[] = [], outUV: number[] = [], outIdx: number[] = [], outStrain: number[] = [];
+  const extraPinnedSet = new Set(extraPinned);
+  const isPinned = (v: number) =>
+    (v < pinned.length && pinned[v] === 1) || extraPinnedSet.has(v) || (coneBase >= 0 && v >= coneBase && v < coneFreeFrom);
   const outSkI: number[] = [], outSkW: number[] = [], outFree: number[] = [], outWeld: number[] = [];
   const vmap = new Map<number, number>();
   const W = Math.max(1e-3, Math.max(bx1 - cx, cx - bx0));
@@ -585,7 +885,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     const u = 0.5 + ((x - cx) / W) * 0.5; // 0..1 across the garment width
     outUV.push(back ? 0.5 + (1 - u) * 0.5 : u * 0.5, (y - by0) / H);
     outStrain.push(strainArr[v] ?? 1);
-    outFree.push(v >= coneFreeFrom ? 1 : 0);
+    outFree.push(isPinned(v) ? 0 : 1);
     outWeld.push(v);
     outSkI.push(...work.skin[v].i);
     outSkW.push(...work.skin[v].w);
@@ -601,6 +901,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     const back = nz < 0 && Math.abs(nz) > 1e-9 ? true : nz >= 0 ? false : (work.pos[a * 3 + 2] < 0);
     outIdx.push(emit(a, back), emit(b, back), emit(c, back));
   }
+  stage("final-buffers");
   return {
     rest: Float32Array.from(outPos),
     skinIdx: Uint16Array.from(outSkI),

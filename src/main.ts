@@ -10,16 +10,16 @@ import { AvatarView } from "./viewer/avatarView";
 import { Stage } from "./viewer/scene";
 import { GarmentView } from "./viewer/garmentView";
 import { buildGarment } from "./garment/build";
-import { buildAtlas, cutoutGarment, cutoutFromMask, guessGarment, loadImage, toCanvas, type AvatarMarks, type Cutout } from "./garment/photo";
+import { buildAtlas, cutoutGarment, cutoutFromMask, guessGarment, loadImage, looksLikePerson, toCanvas, type AvatarMarks, type Cutout } from "./garment/photo";
 import { analyzePersonGarments, marksFromLandmarks, type PersonGarment } from "./garment/personPhoto";
-import { segmentPerson } from "./photo/segmenter";
+import { segmentPerson, preloadSegmenter } from "./photo/segmenter";
 import { defaultSpec, underwearSpecs, TYPE_LABELS, SLEEVE_LABELS, SILHOUETTE_LABELS, type GarmentSpec, type GarmentType } from "./garment/spec";
 import { parseSizeChart, GARMENT_KEY_LABELS, type ParsedChart, type GarmentKey } from "./fit/sizeChart";
 import { parseFabric, stretchLabel, DEFAULT_FABRIC, type Fabric } from "./fit/fabric";
 import { evaluateFit, recommendSize, type FitResult } from "./fit/fit";
 import { classifyBodyShape } from "./style/bodyShape";
 import { buildAdvice, buildAIPrompt } from "./style/advice";
-import { measureFromPhotos, detectPerson } from "./photo/bodyFromPhoto";
+import { measureFromPhotos, detectPerson, preloadPoseModel } from "./photo/bodyFromPhoto";
 import { wardrobe, packGarment, unpackCutout, type SavedGarment } from "./app/wardrobe";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -162,7 +162,7 @@ async function main() {
       stage.setFigure(maxY, null);
     }
     // let skirts settle once the pose is reached (sitting / non-standing poses)
-    if (poseName === "sit") for (const w of [...worn].sort((a, b) => layerOf(a) - layerOf(b))) w.view?.update(true, seatInfo);
+    for (const w of [...worn].sort((a, b) => layerOf(a) - layerOf(b))) w.view?.update(true, seatInfo);
     stage.setFraming(poseName === "half" ? "half" : "full");
   };
 
@@ -213,20 +213,35 @@ async function main() {
     const base = ys[i] + (ys[i + 1] - ys[i]) * (tt - i);
     return t > 3 ? ys[3] - (t - 3) * (ys[2] - ys[3]) : base;
   };
-  const underOf = (w: Worn) => (w.underwear || w.spec.type !== "top" ? [] : worn.filter((o) => o !== w && (o.spec.type === "skirt" || o.spec.type === "pants") && o.view));
+  // garments a given garment must stay outside of: underwear for everything, bottoms for a top
+  const underOf = (w: Worn) => {
+    if (w.underwear) return [];
+    const list = underwear.filter((u) => u.view);
+    if (w.spec.type === "top") list.push(...worn.filter((o) => o !== w && (o.spec.type === "skirt" || o.spec.type === "pants") && o.view));
+    return list;
+  };
+  let lastWearMs = 0;
+  let wearBreakdown: Record<string, number> = {};
   const buildView = (w: Worn) => {
+    const tStart = performance.now();
     w.view?.dispose();
     const saved = body.pose;
     const under = underOf(w).map((o) => {
       const gm = o.view!.data;
       return { pos: gm.rest, normals: computeNormals(gm.rest, gm.index, gm.vertexCount), count: gm.vertexCount };
     });
+    const t1 = performance.now();
     const gm = buildGarment(w.spec, { body, measurer, m: meas, layer: layerOf(w), under });
     body.setPose(saved);
+    const t2 = performance.now();
     const atlas = buildAtlas(w.cutout, { bbox: gm.bbox, torsoHalfWidth: gm.torsoHalfWidth, plainBack: w.plainBack, avatarMarks: avatarMarks() }, w.spec.color ?? "#7a93b8");
+    const t3 = performance.now();
     w.view = new GarmentView(avatar, w.spec, gm, atlas);
     w.view.under = underOf(w).map((o) => o.view!);
-    w.view.update();
+    const t4 = performance.now();
+    w.view.update(!w.underwear, seatInfo);
+    lastWearMs = performance.now() - tStart;
+    wearBreakdown = { prep: t1 - tStart, build: t2 - t1, atlas: t3 - t2, view: t4 - t3, skinSim: performance.now() - t4 };
     w.view.setHeatmap(heatmap && !w.underwear);
   };
   const rebuildAll = () => {
@@ -236,10 +251,17 @@ async function main() {
   const setUnderwear = (on: boolean) => {
     for (const u of underwear) u.view?.dispose();
     underwear = [];
-    if (!on) return;
-    underwear = underwearSpecs(meas)
-      .map((spec) => ({ id: nextId++, spec, cutout: null, plainBack: true, view: null, chart: null, fit: null, underwear: true }));
-    for (const u of underwear) buildView(u);
+    if (on) {
+      underwear = underwearSpecs(meas)
+        .map((spec) => ({ id: nextId++, spec, cutout: null, plainBack: true, view: null, chart: null, fit: null, underwear: true }));
+      for (const u of underwear) buildView(u);
+    }
+    // outer garments re-collide against the new layer set
+    for (const w of [...worn].sort((a, b) => layerOf(a) - layerOf(b))) {
+      if (!w.view) continue;
+      w.view.under = underOf(w).map((o) => o.view!);
+      w.view.update(true, seatInfo);
+    }
   };
   $<HTMLInputElement>("underwear").addEventListener("change", (e) => busy(() => setUnderwear((e.target as HTMLInputElement).checked)));
   $<HTMLInputElement>("heatmap").addEventListener("change", (e) => {
@@ -286,6 +308,7 @@ async function main() {
   };
 
   let personGarments: PersonGarment[] = [];
+  let personTiming: Record<string, number> = {};
   let pendingHemT: number | null = null;
   const showPreview = (c: Cutout) => {
     const prev = $<HTMLCanvasElement>("cutout-preview");
@@ -307,7 +330,9 @@ async function main() {
   };
   /** Try the "photo of a person wearing it" route; returns false for flat-lay / product photos. */
   const tryPersonPhoto = async (img: HTMLImageElement): Promise<boolean> => {
+    const tp0 = performance.now();
     const det = await detectPerson(img).catch(() => null);
+    personTiming = { detect: performance.now() - tp0 };
     const lm = det?.landmarks;
     if (!lm) return false;
     const vis = [11, 12, 23, 24].every((k) => (lm[k].visibility ?? 1) > 0.5);
@@ -315,9 +340,13 @@ async function main() {
     const canvas = toCanvas(img);
     const k = canvas.width / img.naturalWidth;
     const marks = marksFromLandmarks(lm.map((p) => ({ x: p.x * k, y: p.y * k })));
+    const tp1 = performance.now();
     const labels = await segmentPerson(canvas);
+    personTiming.segment = performance.now() - tp1;
+    const tp2 = performance.now();
     const rgb = canvas.getContext("2d", { willReadFrequently: true })!.getImageData(0, 0, canvas.width, canvas.height).data;
     personGarments = analyzePersonGarments(labels, rgb, canvas.width, canvas.height, marks);
+    personTiming.analyze = performance.now() - tp2;
     if (!personGarments.length) return false;
     const box = $("person-garments");
     box.innerHTML = "";
@@ -341,7 +370,7 @@ async function main() {
       $("cutout-wrap").hidden = false;
       $("guess-text").textContent = "分析照片中…（第一次需要載入人體偵測模型）";
       pendingHemT = null;
-      if (await tryPersonPhoto(img)) return;
+      if (looksLikePerson(img) && (await tryPersonPhoto(img))) return;
       const c = cutoutGarment(img);
       lastCutout = c;
       showPreview(c);
@@ -585,6 +614,7 @@ async function main() {
   }
 
   // ------------------------------------------------------------ photo measuring
+  document.querySelector("#tab-body details")?.addEventListener("toggle", () => preloadPoseModel());
   $("photo-measure").addEventListener("click", async () => {
     const front = $<HTMLInputElement>("photo-front").files?.[0];
     const side = $<HTMLInputElement>("photo-side").files?.[0];
@@ -606,6 +636,8 @@ async function main() {
     document.querySelectorAll<HTMLButtonElement>("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
     document.querySelectorAll<HTMLElement>(".tab").forEach((t) => (t.hidden = t.id !== "tab-" + b.dataset.tab));
     if (b.dataset.tab === "style") renderStyle();
+    // photo models are big: warm them up as soon as the user heads for the photo features
+    if (b.dataset.tab === "wear") { preloadPoseModel(); preloadSegmenter(); }
   }));
   $("apply-body").addEventListener("click", () => {
     profile.targets = readBodyForm();
@@ -629,6 +661,9 @@ async function main() {
     get measurements() { return meas; },
     get pose() { return poseName; },
     get poseSettled() { return poseAnim === null; },
+    get lastWearMs() { return lastWearMs; },
+    get wearBreakdown() { return wearBreakdown; },
+    get personTiming() { return personTiming; },
     garmentKeys: GARMENT_KEY_LABELS as Record<GarmentKey, string>,
     setPose, setUnderwear, measureFromPhotos, loadImage,
   };

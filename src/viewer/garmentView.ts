@@ -17,6 +17,7 @@ export class GarmentView {
   readonly spec: GarmentSpec;
   private readonly posed: Float32Array;
   private texture: THREE.Texture | null = null;
+  lastSimMs = 0;
   /** garments worn underneath this one (collided against after skinning) */
   under: GarmentView[] = [];
 
@@ -73,13 +74,20 @@ export class GarmentView {
     body.skinRaw(d.rest, d.skinIdx, d.skinW, d.vertexCount, this.posed);
     const gap = Math.max(0.003, this.spec.fabric.thickness * 1.5);
     collide(this.posed, d.vertexCount, this.avatar.posedBodyPositions, this.avatar.posedBodyNormals, body.data.bodyVertexCount, gap);
-    for (const u of this.under) collide(this.posed, d.vertexCount, u.posedPositions, u.posedNormals, u.data.vertexCount, 0.006);
+    for (const u of this.under) collide(this.posed, d.vertexCount, u.posedPositions, u.posedNormals, u.data.vertexCount, 0.006, 0.02);
     if (simulate && d.free.some((f) => f)) {
+      const t0 = performance.now();
       drapeCloth({
         pos: this.posed, rest: d.rest, index: d.index, free: d.free, weld: d.weld,
         body: this.avatar.posedBodyPositions, bodyN: this.avatar.posedBodyNormals, bodyCount: body.data.bodyVertexCount,
-        gap: gap + 0.006, seat, drape: this.spec.fabric.drape,
+        gap: gap + (seat ? 0.012 : 0.004), seat, drape: this.spec.fabric.drape,
+        under: this.under.map((u) => ({ pos: u.posedPositions, normals: u.posedNormals, count: u.data.vertexCount })),
+        // sitting needs the fabric to gather over the lap; standing keeps the cut's shape
+        compress: seat ? undefined : 0.85,
+        steps: seat ? 44 : 20, iterations: seat ? 10 : 6,
       });
+      this.lastSimMs = performance.now() - t0;
+      for (const u of this.under) collide(this.posed, d.vertexCount, u.posedPositions, u.posedNormals, u.data.vertexCount, 0.006, 0.02);
     }
     const g = this.mesh.geometry;
     (g.attributes.position.array as Float32Array).set(this.posed);

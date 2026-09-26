@@ -103,6 +103,17 @@ export class AvatarView {
     this.updateProxy(this.hairMesh);
   }
 
+  private refMesh: ProxyMesh | null = null;
+  /** Show one of the CC0 reference garments (development aid for garment proportions). */
+  setReference(name: string | null): void {
+    if (this.refMesh) { this.group.remove(this.refMesh.mesh); this.refMesh.mesh.geometry.dispose(); this.refMesh = null; }
+    const p = this.body.data.refClothes.find((r) => r.name === name);
+    if (!p) return;
+    const mat = new THREE.MeshStandardMaterial({ map: loadTex(this.baseUrl + p.texture), roughness: 0.85, side: THREE.DoubleSide });
+    this.refMesh = this.makeProxy(p, mat);
+    this.updateProxy(this.refMesh);
+  }
+
   setHairColor(hex: string): void {
     this.hairColor.set(hex);
     if (this.hairMesh) (this.hairMesh.mesh.material as THREE.MeshStandardMaterial).color.copy(this.hairColor);
@@ -148,6 +159,7 @@ export class AvatarView {
     g.computeBoundingSphere();
     for (const e of this.extras) this.updateProxy(e);
     if (this.hairMesh) this.updateProxy(this.hairMesh);
+    if (this.refMesh) this.updateProxy(this.refMesh);
   }
 
   get posedBodyPositions(): Float32Array { return this.bodyPosed; }

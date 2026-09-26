@@ -175,7 +175,8 @@ export class Stage {
 
   private loop(): void {
     this.timer.update();
-    const dt = Math.min(this.timer.getDelta(), 0.1);
+    const rawDt = this.timer.getDelta();
+    const dt = Math.min(rawDt, 0.1);
     if (this.tween) {
       const tw = this.tween;
       tw.t = Math.min(1, tw.t + dt / 0.6);
@@ -189,8 +190,9 @@ export class Stage {
     if (this.quality && this.composer) {
       this.composer.render(dt);
       // adaptive quality: weak GPUs fall back to plain rendering
-      this.slowFrames = dt > 0.045 ? this.slowFrames + 1 : Math.max(0, this.slowFrames - 2);
-      if (this.slowFrames > 60) {
+      // count seconds spent in slow frames (not frames: at 1 fps a frame count would take a minute)
+      this.slowFrames = rawDt > 0.045 ? this.slowFrames + rawDt : Math.max(0, this.slowFrames - rawDt * 2);
+      if (this.slowFrames > 2) {
         this.quality = false;
         this.slowFrames = 0;
         this.onQualityDrop?.();

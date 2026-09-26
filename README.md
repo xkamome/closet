@@ -38,7 +38,7 @@ npm run bridge     # （選用）另開一個終端機，啟動 AI 穿搭建議�
 | 假人模型 | [MakeHuman](http://www.makehumancommunity.org/) 1.x 基礎網格、體型 target、骨架、權重、髮型、皮膚（全部 CC0），由 `tools/build_avatar.py` 轉成 `public/avatar/avatar.json + .bin` |
 | 身形求解 | 在模型上水平切片、取凸包周長（模擬皮尺），用 Gauss-Newton 反推 64 組 morph 權重（`src/avatar/solver.ts`） |
 | 姿勢 | MakeHuman BVH 姿勢＋程式產生的坐姿（依世界方向對準骨頭），CPU 蒙皮 |
-| 衣服 | 依成衣尺寸生成：身體表面裁切＋凸包撐開到成衣圍度＋垂落＋Taubin 平滑模擬布料張力；裙擺用圓錐布片加摺痕；坐姿時用 PBD 布料模擬（`src/garment/`） |
+| 衣服 | 依成衣尺寸生成：身體表面裁切＋凸包撐開到成衣圍度＋垂落＋Taubin 平滑；**接袖**（袖籠依肩寬定位、袖管沿手臂橫切面撐開袖寬、依重力下垂）、**打版式領口曲線**（圓領／V／U／一字的前後領深與領寬）＋羅紋包邊；裙擺用圓錐布片；最後以 PBD 布料放鬆（重力、不可伸長、彎曲、碰撞含內層衣物），換衣服 1 秒內完成。比例以 MakeHuman CC0 專業女裝校正（`src/garment/`） |
 | 照片 | 商品照：邊緣色彩洪水填充去背、鄰近色擴散貼圖。模特兒照：MediaPipe 多類別分割（衣服／皮膚／頭髮）＋姿勢關節，拆分上衣／下身／洋裝並依關節分段對位貼圖。人像量身：Pose Landmarker＋人像分割 |
 | 合身判斷 | 尺寸表解析（中／英、平量／圍度、吋／公分、彈性範圍）＋材質彈性係數＋逐部位鬆份規則（`src/fit/`） |
 | 繪圖 | three.js（PBR 材質、環境光、陰影、ACES 色調、GTAO 環境光遮蔽） |

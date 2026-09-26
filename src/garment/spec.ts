@@ -51,14 +51,18 @@ export function underwearSpecs(body: { bust: number; waist: number; hips: number
 }
 
 /** Sensible default measurements (cm) for a garment on a body with the given key girths. */
-export function defaultSpec(type: GarmentType, body: { bust: number; waist: number; hips: number; shoulder: number; armLength: number; inseam: number; thigh: number; height: number }): GarmentSpec {
+export function defaultSpec(type: GarmentType, body: { bust: number; waist: number; hips: number; shoulder: number; armLength: number; inseam: number; thigh: number; height: number; neckY?: number; hipY?: number }): GarmentSpec {
   const base: GarmentSpec = {
     type, sleeve: "short", neckline: "crew", silhouette: "straight", rise: "natural", fabric: DEFAULT_FABRIC, m: {},
   };
   const h = body.height / 160;
   switch (type) {
     case "top":
-      base.m = { shoulder: body.shoulder + 1, chest: body.bust + 10, waist: body.waist + 18, hem: body.hips + 8, length: 60 * h, sleeveLength: 18 * h };
+      // a regular crew-neck tee: hem a little below the hip line, sleeve to mid upper arm
+      base.m = {
+        shoulder: body.shoulder + 1, chest: body.bust + 8, waist: body.waist + 14, hem: body.hips + 6,
+        length: body.neckY && body.hipY ? Math.round(body.neckY - body.hipY - 4 * h) : 56 * h, sleeveLength: 16 * h,
+      };
       break;
     case "dress":
       base.silhouette = "aline";

@@ -112,6 +112,16 @@ try {
     await shot("04-worn");
   });
 
+  await check("flat-lay sleeve length is recognised (long sleeve / sleeveless)", async () => {
+    for (const [file, want] of [["samples/longsleeve.png", "long"], ["samples/tank.png", "none"]]) {
+      await page.evaluate(() => { document.querySelector("#guess-text").textContent = ""; });
+      await page.setInputFiles("#garment-photo", file);
+      await page.waitForFunction(() => /判斷為|偵測到/.test(document.querySelector("#guess-text").textContent), null, { timeout: 120000 });
+      assert((await page.inputValue("#g-type")) === "top", `${file} should be a top`);
+      assert((await page.inputValue("#g-sleeve")) === want, `${file}: sleeve ${await page.inputValue("#g-sleeve")} != ${want}`);
+    }
+  });
+
   await check("size chart gives per-region fit and a recommended size", async () => {
     await page.click('#tabs button[data-tab="size"]');
     await page.fill("#size-text", fs.readFileSync("samples/size-chart.txt", "utf8"));
@@ -134,7 +144,7 @@ try {
     await page.click('#tabs button[data-tab="wear"]');
     await page.setInputFiles("#garment-photo", "samples/person.png");
     await page.waitForTimeout(300);
-    await page.waitForFunction(() => document.querySelector("#busy").hidden && document.querySelectorAll("#person-garments button").length > 0, null, { timeout: 120000 });
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && document.querySelectorAll("#person-garments button").length > 0, null, { timeout: 240000 });
     const chips = await page.$$eval("#person-garments button", (bs) => bs.map((b) => b.dataset.type));
     assert(chips.includes("top") && chips.includes("skirt"), "detected " + chips);
     for (let i = 0; i < chips.length; i++) {

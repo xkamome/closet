@@ -1,7 +1,7 @@
 // Shared geometry helpers for garments (no three.js dependency).
 
 /** Push garment vertices out of the body along the nearest body vertex normal. */
-export function collide(pos: Float32Array | number[], n: number, body: Float32Array, bodyN: Float32Array, nb: number, gap: number): void {
+export function collide(pos: Float32Array | number[], n: number, body: Float32Array, bodyN: Float32Array, nb: number, gap: number, maxDist = Infinity): void {
   const cell = 0.03;
   const grid = new Map<number, number[]>();
   const key = (x: number, y: number, z: number) => ((Math.floor(x / cell) + 512) * 1024 + (Math.floor(y / cell) + 512)) * 1024 + (Math.floor(z / cell) + 512);
@@ -23,7 +23,7 @@ export function collide(pos: Float32Array | number[], n: number, body: Float32Ar
         if (d2 < bd) { bd = d2; best = i; }
       }
     }
-    if (best < 0) continue;
+    if (best < 0 || bd > maxDist * maxDist) continue;
     const nx = bodyN[best * 3], ny = bodyN[best * 3 + 1], nz = bodyN[best * 3 + 2];
     const s = (x - body[best * 3]) * nx + (y - body[best * 3 + 1]) * ny + (z - body[best * 3 + 2]) * nz;
     if (s < gap) {

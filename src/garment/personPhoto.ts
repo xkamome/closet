@@ -118,7 +118,8 @@ export function analyzePersonGarments(labels: Uint8Array, rgb: Uint8ClampedArray
     return last;
   };
   const arm = Math.max(armCover(m.shoulderL, m.elbowL, m.wristL), armCover(m.shoulderR, m.elbowR, m.wristR));
-  const sleeve: Sleeve = arm < 0.06 ? "none" : arm < 0.3 ? "short" : arm < 0.62 ? "elbow" : "long";
+  // fraction of the shoulder->wrist path covered (the upper arm is ~0.5 of it)
+  const sleeve: Sleeve = arm < 0.06 ? "none" : arm < 0.5 ? "short" : arm < 0.75 ? "elbow" : "long"; // elbow = 0.5
 
   const meanColor = (sel: (x: number, y: number) => boolean) => {
     let r = 0, g = 0, b = 0, n = 0;
@@ -163,7 +164,7 @@ export function analyzePersonGarments(labels: Uint8Array, rgb: Uint8ClampedArray
     const cut = chainY(m, hasLower ? Math.min(endT, 1.0) : endT) + 2;
     out.push({
       type: "top", sleeve, silhouette: "straight", hemT: endT, topT: 0,
-      mask: maskWhere((_, y) => (hasLower ? y <= cut : true)), color: upperColor, reason: "肩膀到腰部有衣服",
+      mask: maskWhere((_, y) => (hasLower ? y <= cut : true)), color: upperColor, reason: `肩膀到腰部有衣服，袖子覆蓋手臂 ${Math.round(arm * 100)}%`,
     });
   }
   if (hasLower) {

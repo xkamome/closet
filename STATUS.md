@@ -9,6 +9,12 @@
 > - Next: the single next step
 > - (optional) BLOCKER: exact error + what was tried
 
+## [2026-09-27 07:30] Garment realism pass (user feedback: "人物很好但衣服不合身")
+- User choices: fix tops first (shoulder line, sleeves, neckline); improve procedural + physics relaxation; result must appear within 1 s, no visible settling; Chrome/Edge
+- Done: CC0 MakeHuman reference garments baked (refClothes) + tools/compare-ref.mjs; set-in sleeves (armhole clip by shoulder width, arm cross-section tube, gravity hang, kNN skinning); pattern-style neckline curve + rib collar; PBD relaxation on every build/pose (bending, compression, tethers, under-layer collision, CPU-time budget); flat-lay cutout closing (white-on-white), reach-based sleeve guess, person pre-check (skin/face) before MediaPipe, model preloading, adaptive AO time-based
+- Verified: verify.mjs all pass (50 unit incl. tests/garmentShape.test.ts proportions + <1s CPU budget, e2e 10/10)
+- Note: a Remotion job (other project) was loading the CPU during this run; left untouched
+
 ## [2026-09-27 05:30] Polish: real AI bridge verified, parser hardening, sit arms
 - Done: real `claude -p` via bridge works (cwd = temp dir to avoid project hooks); UI AI flow verified (~80s answer); size-chart 平量 note no longer doubles full girths; prompt wording for bottoms; sitting hands rest on thighs
 - Verified: verify.mjs all pass (44 unit, e2e 9/9)

@@ -12,12 +12,16 @@ export interface DrapeParams {
   body: Float32Array; // posed body positions
   bodyN: Float32Array; // posed body normals
   bodyCount: number;
+  /** extra collision surfaces (garments worn underneath), as positions + normals */
+  under?: { pos: Float32Array; normals: Float32Array; count: number }[];
   gap: number;
   seat?: { x: number; z: number; r: number; y: number } | null;
   steps?: number;
   iterations?: number;
   /** 0 = stiff (keeps shape) .. 1 = fluid */
   drape?: number;
+  /** resistance to in-plane compression (0..1); high keeps the cut's shape, folds form by bending instead */
+  compress?: number;
 }
 
 export function drapeCloth(p: DrapeParams): void {
@@ -55,6 +59,21 @@ export function drapeCloth(p: DrapeParams): void {
       ea.push(a); eb.push(b); el.push(dist(rest, a, b));
     }
   }
+  // ---- bending: distance between the two vertices opposite each interior edge
+  const edgeTri = new Map<number, number>();
+  const ba: number[] = [], bb: number[] = [], bl: number[] = [];
+  for (let t = 0; t < index.length; t += 3) {
+    for (let k = 0; k < 3; k++) {
+      const a = pid[index[t + k]], b = pid[index[t + ((k + 1) % 3)]], c = pid[index[t + ((k + 2) % 3)]];
+      if (a === b) continue;
+      const key = a < b ? a * 4194304 + b : b * 4194304 + a;
+      const other = edgeTri.get(key);
+      if (other === undefined) edgeTri.set(key, c);
+      else if (other !== c && (free[other] || free[c])) { ba.push(other); bb.push(c); bl.push(dist(rest, other, c)); }
+    }
+  }
+  const bendK = 0.08 + 0.35 * (1 - (p.drape ?? 0.5));
+
   // ---- long-range attachments: each free particle stays within its rest distance of the
   //      nearest pinned particle bordering the free region
   const border: number[] = [];
@@ -76,33 +95,56 @@ export function drapeCloth(p: DrapeParams): void {
   const cell = 0.035;
   const grid = new Map<number, number[]>();
   const key = (x: number, y: number, z: number) => ((x + 512) * 1024 + (y + 512)) * 1024 + (z + 512);
-  for (let i = 0; i < bodyCount; i++) {
-    const k = key(Math.floor(body[i * 3] / cell), Math.floor(body[i * 3 + 1] / cell), Math.floor(body[i * 3 + 2] / cell));
+  // body + under-layers form one collision point cloud
+  let allPos = body, allN = bodyN, allCount = bodyCount;
+  if (p.under?.length) {
+    allCount = bodyCount + p.under.reduce((a, u) => a + u.count, 0);
+    allPos = new Float32Array(allCount * 3); allN = new Float32Array(allCount * 3);
+    allPos.set(body.subarray(0, bodyCount * 3)); allN.set(bodyN.subarray(0, bodyCount * 3));
+    let off = bodyCount * 3;
+    for (const u of p.under) { allPos.set(u.pos.subarray(0, u.count * 3), off); allN.set(u.normals.subarray(0, u.count * 3), off); off += u.count * 3; }
+  }
+  for (let i = 0; i < allCount; i++) {
+    const k = key(Math.floor(allPos[i * 3] / cell), Math.floor(allPos[i * 3 + 1] / cell), Math.floor(allPos[i * 3 + 2] / cell));
     const c = grid.get(k);
     if (c) c.push(i); else grid.set(k, [i]);
   }
   const prev = pos.slice();
   const g = -9.81 * (1 / 60) * (1 / 60);
-  const compress = 0.15 + 0.35 * (1 - (p.drape ?? 0.5)); // resistance to compression (fabric stiffness)
+  const compress = p.compress ?? 0.15 + 0.35 * (1 - (p.drape ?? 0.5)); // resistance to compression (fabric stiffness)
+  // nearest body vertex per particle, refreshed every few steps (particles move little per step)
+  const nearest = new Int32Array(n).fill(-1);
+  const findNearest = (i: number) => {
+    const o = i * 3;
+    const x = pos[o], y = pos[o + 1], z = pos[o + 2];
+    const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
+    let best = -1, bd = Infinity;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const c = grid.get(key(cx + dx, cy + dy, cz + dz));
+      if (!c) continue;
+      for (const j of c) {
+        const ex = x - allPos[j * 3], ey = y - allPos[j * 3 + 1], ez = z - allPos[j * 3 + 2];
+        const d2 = ex * ex + ey * ey + ez * ez;
+        if (d2 < bd) { bd = d2; best = j; }
+      }
+    }
+    nearest[i] = best;
+  };
+  let stepNo = 0;
   const collideAll = () => {
+    const refresh = stepNo++ % 4 === 0;
     for (let i = 0; i < n; i++) {
       if (!free[i]) continue;
       const o = i * 3;
       const x = pos[o], y = pos[o + 1], z = pos[o + 2];
-      const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
-      let best = -1, bd = Infinity;
-      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
-        const c = grid.get(key(cx + dx, cy + dy, cz + dz));
-        if (!c) continue;
-        for (const j of c) {
-          const ex = x - body[j * 3], ey = y - body[j * 3 + 1], ez = z - body[j * 3 + 2];
-          const d2 = ex * ex + ey * ey + ez * ez;
-          if (d2 < bd) { bd = d2; best = j; }
-        }
-      }
-      if (best >= 0) {
-        const nx = bodyN[best * 3], ny = bodyN[best * 3 + 1], nz = bodyN[best * 3 + 2];
-        const sd = (x - body[best * 3]) * nx + (y - body[best * 3 + 1]) * ny + (z - body[best * 3 + 2]) * nz;
+      if (refresh) findNearest(i);
+      const best = nearest[i];
+      // under-layer points are open sheets: only push when actually close (their edges would bulge the cloth)
+      const farUnder = best >= bodyCount &&
+        (x - allPos[best * 3]) ** 2 + (y - allPos[best * 3 + 1]) ** 2 + (z - allPos[best * 3 + 2]) ** 2 > 0.0004;
+      if (best >= 0 && !farUnder) {
+        const nx = allN[best * 3], ny = allN[best * 3 + 1], nz = allN[best * 3 + 2];
+        const sd = (x - allPos[best * 3]) * nx + (y - allPos[best * 3 + 1]) * ny + (z - allPos[best * 3 + 2]) * nz;
         if (sd < gap) {
           const push = gap - sd;
           pos[o] += nx * push; pos[o + 1] += ny * push; pos[o + 2] += nz * push;
@@ -138,6 +180,18 @@ export function drapeCloth(p: DrapeParams): void {
         const wa = fa ? (fb ? 0.5 : 1) : 0, wb = fb ? (fa ? 0.5 : 1) : 0;
         pos[a] += dx * diff * wa; pos[a + 1] += dy * diff * wa; pos[a + 2] += dz * diff * wa;
         pos[b] -= dx * diff * wb; pos[b + 1] -= dy * diff * wb; pos[b + 2] -= dz * diff * wb;
+      }
+      if (it % 2 === 0) {
+        for (let e = 0; e < ba.length; e++) {
+          const a = ba[e] * 3, b = bb[e] * 3;
+          const dx = pos[b] - pos[a], dy = pos[b + 1] - pos[a + 1], dz = pos[b + 2] - pos[a + 2];
+          const d = Math.hypot(dx, dy, dz) || 1e-9;
+          const diff = ((d - bl[e]) / d) * bendK;
+          const fa = free[ba[e]], fb = free[bb[e]];
+          const wa = fa ? (fb ? 0.5 : 1) : 0, wb = fb ? (fa ? 0.5 : 1) : 0;
+          pos[a] += dx * diff * wa; pos[a + 1] += dy * diff * wa; pos[a + 2] += dz * diff * wa;
+          pos[b] -= dx * diff * wb; pos[b + 1] -= dy * diff * wb; pos[b + 2] -= dz * diff * wb;
+        }
       }
       for (let i = 0; i < n; i++) {
         const a = anchor[i];

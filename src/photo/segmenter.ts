@@ -38,3 +38,6 @@ export async function segmentPerson(img: HTMLImageElement | HTMLCanvasElement): 
   res.close?.();
   return out;
 }
+
+/** Start loading the segmentation model in the background. */
+export function preloadSegmenter(): void { getSegmenter().catch(() => { segPromise = null; }); }

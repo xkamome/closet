@@ -46,7 +46,7 @@ check("avatar assets", () => {
 });
 
 check("required unit test files", () => {
-  for (const t of ["sizeChart", "fabric", "fit", "bodyShape", "solver"]) {
+  for (const t of ["sizeChart", "fabric", "fit", "bodyShape", "solver", "garmentShape"]) {
     const f = `tests/${t}.test.ts`;
     if (!fs.existsSync(f)) throw new Error(`missing ${f}`);
   }
