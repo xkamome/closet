@@ -1,8 +1,9 @@
 // Starts the AI bridge with a fake claude binary and checks /api/health and /api/ask.
 import { spawn } from "node:child_process";
+import path from "node:path";
 
 const port = 18787;
-const env = { ...process.env, BRIDGE_PORT: String(port), CLAUDE_CMD: JSON.stringify(["node", "verify/fake-claude.mjs"]) };
+const env = { ...process.env, BRIDGE_PORT: String(port), CLAUDE_CMD: JSON.stringify(["node", path.resolve("verify/fake-claude.mjs")]) };
 const srv = spawn("node", ["server/ai-bridge.mjs"], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 let log = "";
 srv.stdout.on("data", (d) => (log += d));
