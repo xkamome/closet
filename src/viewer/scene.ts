@@ -27,7 +27,13 @@ export class Stage {
   private composer: EffectComposer | null = null;
   private gtao: GTAOPass | null = null;
   /** ambient occlusion post-processing (contact shadows in folds, armpits, garment edges) */
-  quality = true;
+  private _quality = true;
+  /** ambient occlusion on/off; the output pass tone-maps the background, so it gets its own colour */
+  get quality(): boolean { return this._quality; }
+  set quality(on: boolean) {
+    this._quality = on;
+    (this.scene.background as THREE.Color).set(on && this.composer ? 0xfff6ea : 0xeeeae4);
+  }
   /** called when ambient occlusion is switched off automatically because frames are too slow */
   onQualityDrop: (() => void) | null = null;
   private slowFrames = 0;
@@ -97,6 +103,7 @@ export class Stage {
       this.composer = null;
     }
 
+    this.quality = this._quality;
     new ResizeObserver(() => this.resize()).observe(container);
     this.resize();
     this.frame(true);
