@@ -126,7 +126,8 @@ function rayHull(hull: number[], cx: number, cz: number, dx: number, dz: number)
 
 interface Ring { y: number; hull: number[]; cx: number; cz: number; P: number }
 
-export interface BuildContext { body: Body; measurer: BodyMeasurer; m: Measurements; layer?: number }
+export interface UnderLayer { pos: Float32Array; normals: Float32Array; count: number }
+export interface BuildContext { body: Body; measurer: BodyMeasurer; m: Measurements; layer?: number; under?: UnderLayer[] }
 
 export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh {
   const { body, measurer, m } = ctx;
@@ -510,6 +511,8 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     const iters = spec.silhouette === "fitted" ? 8 : 20;
     taubinSmooth(work.pos, work.tris, iters, 0.55, -0.58, (v) => border[v] === 1);
     collide(work.pos, work.skin.length, rest, restNormals, nBody, th);
+    // outer layers (a top worn over a skirt / trousers) stay outside the garments underneath
+    for (const u of ctx.under ?? []) collide(work.pos, work.skin.length, u.pos, u.normals, u.count, 0.006);
   }
 
   // ---------- final buffers: split by facing (front / back) for the photo atlas

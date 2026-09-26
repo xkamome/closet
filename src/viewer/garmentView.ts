@@ -17,6 +17,8 @@ export class GarmentView {
   readonly spec: GarmentSpec;
   private readonly posed: Float32Array;
   private texture: THREE.Texture | null = null;
+  /** garments worn underneath this one (collided against after skinning) */
+  under: GarmentView[] = [];
 
   constructor(readonly avatar: AvatarView, spec: GarmentSpec, data: GarmentMesh, atlas: HTMLCanvasElement) {
     this.spec = spec;
@@ -71,6 +73,7 @@ export class GarmentView {
     body.skinRaw(d.rest, d.skinIdx, d.skinW, d.vertexCount, this.posed);
     const gap = Math.max(0.003, this.spec.fabric.thickness * 1.5);
     collide(this.posed, d.vertexCount, this.avatar.posedBodyPositions, this.avatar.posedBodyNormals, body.data.bodyVertexCount, gap);
+    for (const u of this.under) collide(this.posed, d.vertexCount, u.posedPositions, u.posedNormals, u.data.vertexCount, 0.006);
     if (simulate && d.free.some((f) => f)) {
       drapeCloth({
         pos: this.posed, rest: d.rest, index: d.index, free: d.free, weld: d.weld,
@@ -81,10 +84,14 @@ export class GarmentView {
     const g = this.mesh.geometry;
     (g.attributes.position.array as Float32Array).set(this.posed);
     computeNormals(this.posed, d.index, d.vertexCount, g.attributes.normal.array as Float32Array);
+    this.posedNormals = g.attributes.normal.array as Float32Array;
     g.attributes.position.needsUpdate = true;
     g.attributes.normal.needsUpdate = true;
     g.computeBoundingSphere();
   }
+
+  get posedPositions(): Float32Array { return this.posed; }
+  posedNormals: Float32Array = new Float32Array(0);
 
   dispose(): void {
     this.avatar.group.remove(this.mesh);

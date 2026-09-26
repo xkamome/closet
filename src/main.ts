@@ -2,7 +2,7 @@
 
 import { Vector3 } from "three";
 import { loadAvatar } from "./avatar/data";
-import { Body } from "./avatar/body";
+import { Body, computeNormals } from "./avatar/body";
 import { BodyMeasurer, MEASURE_LABELS, type Measurements } from "./avatar/measure";
 import { solveMeasurements, type Targets } from "./avatar/solver";
 import { buildPose, blendPoses, type PoseName } from "./avatar/poses";
@@ -157,7 +157,7 @@ async function main() {
       stage.setFigure(maxY, null);
     }
     // let skirts settle once the pose is reached (sitting / non-standing poses)
-    if (poseName === "sit") for (const w of worn) w.view?.update(true, seatInfo);
+    if (poseName === "sit") for (const w of [...worn].sort((a, b) => layerOf(a) - layerOf(b))) w.view?.update(true, seatInfo);
     stage.setFraming(poseName === "half" ? "half" : "full");
   };
 
@@ -178,7 +178,7 @@ async function main() {
     const p = blendPoses(poseAnim.from, poseAnim.to, k);
     body.setPose(p);
     avatar.update();
-    for (const w of [...underwear, ...worn]) w.view?.update();
+    for (const w of [...underwear, ...[...worn].sort((a, b) => layerOf(a) - layerOf(b))]) w.view?.update();
     if (poseAnim.t >= 1) {
       currentPose = poseAnim.to;
       poseAnim = null;
@@ -206,18 +206,25 @@ async function main() {
     const base = ys[i] + (ys[i + 1] - ys[i]) * (tt - i);
     return t > 3 ? ys[3] - (t - 3) * (ys[2] - ys[3]) : base;
   };
+  const underOf = (w: Worn) => (w.underwear || w.spec.type !== "top" ? [] : worn.filter((o) => o !== w && (o.spec.type === "skirt" || o.spec.type === "pants") && o.view));
   const buildView = (w: Worn) => {
     w.view?.dispose();
     const saved = body.pose;
-    const gm = buildGarment(w.spec, { body, measurer, m: meas, layer: layerOf(w) });
+    const under = underOf(w).map((o) => {
+      const gm = o.view!.data;
+      return { pos: gm.rest, normals: computeNormals(gm.rest, gm.index, gm.vertexCount), count: gm.vertexCount };
+    });
+    const gm = buildGarment(w.spec, { body, measurer, m: meas, layer: layerOf(w), under });
     body.setPose(saved);
     const atlas = buildAtlas(w.cutout, { bbox: gm.bbox, torsoHalfWidth: gm.torsoHalfWidth, plainBack: w.plainBack, avatarMarks: avatarMarks() }, w.spec.color ?? "#7a93b8");
     w.view = new GarmentView(avatar, w.spec, gm, atlas);
+    w.view.under = underOf(w).map((o) => o.view!);
+    w.view.update();
     w.view.setHeatmap(heatmap && !w.underwear);
   };
   const rebuildAll = () => {
     if ($<HTMLInputElement>("underwear").checked) setUnderwear(true);
-    for (const w of worn) buildView(w);
+    for (const w of [...worn].sort((a, b) => layerOf(a) - layerOf(b))) buildView(w);
   };
   const setUnderwear = (on: boolean) => {
     for (const u of underwear) u.view?.dispose();
@@ -245,6 +252,7 @@ async function main() {
     const w: Worn = { id: nextId++, spec, cutout, plainBack, view: null, chart: null, fit: null };
     worn.push(w);
     buildView(w);
+    if (spec.type === "skirt" || spec.type === "pants") for (const t of worn.filter((o) => o.spec.type === "top")) buildView(t);
     selected = w;
     renderWorn();
     renderSizeTargets();

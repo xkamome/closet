@@ -9,6 +9,11 @@
 > - Next: the single next step
 > - (optional) BLOCKER: exact error + what was tried
 
+## [2026-09-27 04:05] Person photos, layering, cloth drape
+- Done: person-photo garments (MediaPipe multiclass seg + pose -> top/skirt/pants/dress, sleeve, hem; landmark-warped texture), top-over-bottom layering, PBD drape for sitting skirts, README, photo-measure calibration (+-4.5cm front only, +-2.3cm with side on synthetic renders)
+- Verified: verify.mjs all pass (41 unit tests, e2e 8/8)
+- Next: wardrobe (IndexedDB), perf (cone skinning kNN), polish
+
 ## [2026-09-27 03:10] M3-M6 app complete, verify passes
 - Done: garment geometry (ease-based grid + skirt cone, Taubin tension, collision), photo cutout + bleed atlas, underwear, full UI (身形/試穿/尺寸/穿搭), AI bridge (claude -p), MediaPipe photo measuring, e2e
 - Verified: node verify/verify.mjs -> all checks passed (build, 36 unit tests, bridge, browser e2e 7/7)

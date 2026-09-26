@@ -31,7 +31,8 @@ try {
   }
   browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
-  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  // MediaPipe/TFLite prints informational lines through console.error ("INFO: Created TensorFlow Lite ...")
+  page.on("console", (m) => { if (m.type() === "error" && !/^INFO:/.test(m.text())) errors.push(m.text()); });
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
   await page.goto(BASE);
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
@@ -125,6 +126,25 @@ try {
     await page.waitForTimeout(700);
     await shot("05-size-S-heatmap");
     await page.uncheck("#heatmap");
+  });
+
+  await check("photo of a person: garments are split, detected and worn", async () => {
+    await page.click('#tabs button[data-tab="wear"]');
+    await page.setInputFiles("#garment-photo", "samples/person.png");
+    await page.waitForTimeout(300);
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && document.querySelectorAll("#person-garments button").length > 0, null, { timeout: 120000 });
+    const chips = await page.$$eval("#person-garments button", (bs) => bs.map((b) => b.dataset.type));
+    assert(chips.includes("top") && chips.includes("skirt"), "detected " + chips);
+    for (let i = 0; i < chips.length; i++) {
+      await page.click(`#person-garments button:nth-child(${i + 1})`);
+      await page.click("#wear");
+      await page.waitForTimeout(300);
+      await page.waitForFunction(() => document.querySelector("#busy").hidden, null, { timeout: 60000 });
+    }
+    const types = await page.evaluate(() => window.__closet.worn.map((w) => w.spec.type).sort().join(","));
+    assert(types === "skirt,top", "worn " + types);
+    await page.waitForTimeout(700);
+    await shot("07-person-photo");
   });
 
   await check("styling advice shows body shape and suggestions", async () => {
