@@ -1,0 +1,11 @@
+{
+  "mode": "unattended",
+  "maxIterations": 20,
+  "verify": ["node verify/verify.mjs"],
+  "verifyTimeoutMs": 540000,
+  "judge": { "enabled": false, "model": "claude-haiku-4-5" },
+  "allowedInstalls": [
+    "vite", "typescript", "three", "@types/three", "vitest", "playwright", "@types/node",
+    "@mediapipe/tasks-vision", "@imgly/background-removal", "numpy", "pillow"
+  ]
+}

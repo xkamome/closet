@@ -1,0 +1,10 @@
+node_modules/
+dist/
+_vendor/
+_logs/
+_artifacts/
+.claude/loop-state.json
+*.log
+public/avatar/
+public/models/
+public/mediapipe/

@@ -1,0 +1,55 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(**/.ssh/**)",
+      "Read(**/*credentials*)",
+      "Read(**/id_rsa*)",
+      "Read(**/id_ed25519*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:\\Users\\TokoHung\\Toko_Claude_works\\closet2\\.claude\\hooks\\bash-guard-strict.mjs\" \"C:\\Users\\TokoHung\\Toko_Claude_works\\closet2\""
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|NotebookEdit|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:\\Users\\TokoHung\\Toko_Claude_works\\closet2\\.claude\\hooks\\path-guard.mjs\" \"C:\\Users\\TokoHung\\Toko_Claude_works\\closet2\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:\\Users\\TokoHung\\Toko_Claude_works\\closet2\\.claude\\hooks\\stop-gate.mjs\" \"C:\\Users\\TokoHung\\Toko_Claude_works\\closet2\"",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:\\Users\\TokoHung\\Toko_Claude_works\\closet2\\.claude\\hooks\\session-banner.mjs\" \"C:\\Users\\TokoHung\\Toko_Claude_works\\closet2\""
+          }
+        ]
+      }
+    ]
+  }
+}
