@@ -171,7 +171,7 @@ export function parseSizeChart(text: string): ParsedChart {
   // --- normalise: inches -> cm, flat -> girth
   const out = [...rows.values()].filter((r) => Object.keys(r.values).length > 0);
   const plausibleGirthMin: Partial<Record<GarmentKey, number>> = { chest: 64, waist: 50, hip: 66, hem: 60, thigh: 36, sleeveOpening: 14, legOpening: 24, upperArm: 20 };
-  let flat = globalFlat || halfKeys.size > 0;
+  let flat = false; // true only if some value was actually doubled
   for (const r of out) {
     for (const k of Object.keys(r.values) as GarmentKey[]) {
       const conv = (v: number) => (unit === "in" ? v * 2.54 : v);
@@ -179,7 +179,9 @@ export function parseSizeChart(text: string): ParsedChart {
       if (r.ranges[k]) r.ranges[k] = [conv(r.ranges[k]![0]), conv(r.ranges[k]![1])];
       if (GIRTH_KEYS.includes(k)) {
         const min = plausibleGirthMin[k] ?? 0;
-        const half = halfKeys.has(k) || globalFlat || r.values[k]! < min;
+        // a page-wide "平量" note only doubles values that are too small to be a full girth
+        // (sites often write 平量 next to numbers that are already circumferences)
+        const half = halfKeys.has(k) || r.values[k]! < min || (globalFlat && r.values[k]! < min * 1.25);
         if (half) {
           flat = true;
           r.values[k] = r.values[k]! * 2;

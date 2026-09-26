@@ -8,6 +8,9 @@
 
 import http from "node:http";
 import { spawn } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const PORT = Number(process.env.BRIDGE_PORT || 8787);
 const TIMEOUT_MS = Number(process.env.BRIDGE_TIMEOUT_MS || 180000);
@@ -24,7 +27,8 @@ function command() {
 export function runClaude(prompt) {
   return new Promise((resolve, reject) => {
     const { bin, args } = command();
-    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    // run outside the project so project-level Claude Code hooks/settings don't apply to the advice call
+    const child = spawn(bin, args, { cwd: os.tmpdir(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let out = "", err = "";
     const timer = setTimeout(() => { child.kill(); reject(new Error("claude 回應逾時")); }, TIMEOUT_MS);
     child.stdout.on("data", (d) => (out += d));
@@ -78,7 +82,7 @@ export function createServer() {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}` || import.meta.url === `file:///${process.argv[1].replace(/\\/g, "/")}`) {
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   createServer().listen(PORT, "127.0.0.1", () => {
     console.log(`AI bridge listening on http://127.0.0.1:${PORT}  (claude: ${command().bin})`);
   });

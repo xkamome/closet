@@ -50,6 +50,31 @@ describe("size chart parser", () => {
     expect(matchKey("前裆")).toBe("rise");
   });
 
+  test("messy real-world paste with notes and a model line", () => {
+    const r = parseSizeChart([
+      "尺寸表(單位:cm)",
+      "尺寸\t肩寬\t胸圍\t衣長\t袖長",
+      "F\t38\t96\t65\t20",
+      "※手工平量，誤差約1~3公分",
+      "模特兒身高168cm 體重50kg 穿F",
+    ].join("\n"));
+    expect(r.rows.length).toBe(1);
+    // already a full girth although the page says 平量: must not be doubled
+    expect(r.rows[0].values).toMatchObject({ shoulder: 38, chest: 96, length: 65, sleeveLength: 20 });
+  });
+
+  test("平量 note with half widths still doubles", () => {
+    const r = parseSizeChart(["平鋪測量", "尺寸 胸圍 腰圍 衣長", "M 46 40 90", "L 48 42 92"].join("\n"));
+    expect(r.rows[0].values.chest).toBe(92);
+    expect(r.rows[1].values.waist).toBe(84);
+  });
+
+  test("English per-size lines", () => {
+    const r = parseSizeChart(["S: Bust 84cm, Waist 66cm, Hip 90cm, Length 95cm", "M: Bust 88cm, Waist 70cm, Hip 94cm, Length 96cm"].join("\n"));
+    expect(r.rows.map((x) => x.size)).toEqual(["S", "M"]);
+    expect(r.rows[1].values).toMatchObject({ chest: 88, waist: 70, hip: 94, length: 96 });
+  });
+
   test("empty input warns", () => {
     expect(parseSizeChart("hello").warnings.length).toBeGreaterThan(0);
   });
