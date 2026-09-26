@@ -1,0 +1,22 @@
+// Dev helper: ask the AI stylist through the UI (needs `npm run dev` + `npm run bridge`).
+import { chromium } from "playwright";
+const browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+await page.goto("http://localhost:5391/");
+await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
+await page.uncheck("#quality");
+await page.click('#tabs button[data-tab="wear"]');
+await page.selectOption("#g-type", "skirt");
+await page.selectOption("#g-silhouette", "aline");
+await page.click("#wear-plain");
+await page.waitForFunction(() => window.__closet.worn.length === 1 && document.querySelector("#busy").hidden, null, { timeout: 60000 });
+await page.click('#tabs button[data-tab="style"]');
+await page.fill("#ai-question", "這件 A 字裙要搭什麼上衣和鞋子？請用三點回答。");
+const t = Date.now();
+await page.click("#ai-ask");
+await page.waitForFunction(() => document.querySelector("#ai-answer").textContent.length > 20 || /無法連到/.test(document.querySelector("#ai-status").textContent), null, { timeout: 180000 });
+console.log("ms", Date.now() - t);
+console.log("status:", await page.textContent("#ai-status"));
+console.log("answer:", (await page.textContent("#ai-answer")).slice(0, 600));
+await page.screenshot({ path: "_artifacts/ai-answer.png" });
+await browser.close();

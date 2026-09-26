@@ -41,10 +41,10 @@ export function buildPose(body: Body, name: PoseName): PoseQuats {
       aimBone(body, pose, `lowerleg01.${s}`, new Vector3(0.03 * x, -1, 0.08));
       aimBone(body, pose, `lowerleg02.${s}`, new Vector3(0.03 * x, -1, 0.08));
       aimBone(body, pose, `foot.${s}`, new Vector3(0.05 * x, -0.45, 1));
-      aimBone(body, pose, `upperarm01.${s}`, new Vector3(0.12 * x, -1, 0.28));
-      aimBone(body, pose, `upperarm02.${s}`, new Vector3(0.12 * x, -1, 0.28));
-      aimBone(body, pose, `lowerarm01.${s}`, new Vector3(-0.12 * x, -0.35, 1));
-      aimBone(body, pose, `lowerarm02.${s}`, new Vector3(-0.12 * x, -0.35, 1));
+      aimBone(body, pose, `upperarm01.${s}`, new Vector3(0.1 * x, -1, 0.12));
+      aimBone(body, pose, `upperarm02.${s}`, new Vector3(0.1 * x, -1, 0.12));
+      aimBone(body, pose, `lowerarm01.${s}`, new Vector3(-0.04 * x, -0.62, 1));
+      aimBone(body, pose, `lowerarm02.${s}`, new Vector3(-0.04 * x, -0.62, 1));
     }
   }
   body.setPose(pose);

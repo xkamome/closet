@@ -3,7 +3,7 @@
 import type { BodyShape, ShapeResult } from "./bodyShape";
 import type { FitResult } from "../fit/fit";
 import type { GarmentSpec } from "../garment/spec";
-import { NECK_LABELS, SILHOUETTE_LABELS, SLEEVE_LABELS, TYPE_LABELS } from "../garment/spec";
+import { NECK_LABELS, RISE_LABELS, SILHOUETTE_LABELS, SLEEVE_LABELS, TYPE_LABELS } from "../garment/spec";
 
 export interface Advice {
   headline: string;
@@ -114,8 +114,10 @@ export function buildAIPrompt(body: Record<string, number>, shape: ShapeResult, 
     `體型判斷：${shape.label}（${shape.reasons.join("；")}），${shape.heightLabel}，${shape.legsLabel}`,
   ];
   if (garment) {
+    const bottom = garment.type === "skirt" || garment.type === "pants";
+    const details = bottom ? RISE_LABELS[garment.rise] : `${SLEEVE_LABELS[garment.sleeve]}、${NECK_LABELS[garment.neckline]}`;
     lines.push("", "【正在試穿的衣服】",
-      `${SILHOUETTE_LABELS[garment.silhouette]}${TYPE_LABELS[garment.type]}，${SLEEVE_LABELS[garment.sleeve]}、${NECK_LABELS[garment.neckline]}，材質：${garment.fabric.label}`,
+      `${SILHOUETTE_LABELS[garment.silhouette]}${bottom && garment.type === "skirt" ? "半身裙" : TYPE_LABELS[garment.type]}，${details}，材質：${garment.fabric.label}`,
       `成衣尺寸：${Object.entries(garment.m).map(([k, v]) => `${k} ${Math.round(v!)}cm`).join("、")}`);
   }
   if (fit) lines.push(`合身判斷：${fit.summary}；${fit.regions.map((r) => `${r.label}${r.status}`).join("、")}`);

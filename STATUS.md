@@ -9,6 +9,11 @@
 > - Next: the single next step
 > - (optional) BLOCKER: exact error + what was tried
 
+## [2026-09-27 05:30] Polish: real AI bridge verified, parser hardening, sit arms
+- Done: real `claude -p` via bridge works (cwd = temp dir to avoid project hooks); UI AI flow verified (~80s answer); size-chart 平量 note no longer doubles full girths; prompt wording for bottoms; sitting hands rest on thighs
+- Verified: verify.mjs all pass (44 unit, e2e 9/9)
+- Next: (optional) more garment types, better sleeve UV mapping from flat-lay photos
+
 ## [2026-09-27 04:50] Wardrobe, advanced sliders, GTAO, perf
 - Done: IndexedDB wardrobe (save / re-wear incl. person-photo warp + size chart), advanced shape sliders (face ethnicity mix, muscle, belly, ...), GTAO ambient occlusion with adaptive fallback, kNN hash + y-bucket slicing (dress build ~240ms warm), e2e random port
 - Verified: verify.mjs all pass (41 unit, e2e 9/9)
