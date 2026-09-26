@@ -20,6 +20,7 @@ import { evaluateFit, recommendSize, type FitResult } from "./fit/fit";
 import { classifyBodyShape } from "./style/bodyShape";
 import { buildAdvice, buildAIPrompt } from "./style/advice";
 import { measureFromPhotos, detectPerson } from "./photo/bodyFromPhoto";
+import { wardrobe, packGarment, unpackCutout, type SavedGarment } from "./app/wardrobe";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
@@ -61,6 +62,8 @@ interface Worn {
   chart: ParsedChart | null;
   fit: FitResult | null;
   underwear?: boolean;
+  sizeText?: string;
+  fabricText?: string;
 }
 let nextId = 1;
 
@@ -331,6 +334,8 @@ async function main() {
     await busy(async () => {
       const img = await loadImage(f);
       $("person-garments").innerHTML = "";
+      $("cutout-wrap").hidden = false;
+      $("guess-text").textContent = "分析照片中…（第一次需要載入人體偵測模型）";
       pendingHemT = null;
       if (await tryPersonPhoto(img)) return;
       const c = cutoutGarment(img);
@@ -376,10 +381,53 @@ async function main() {
       const sel = document.createElement("button");
       sel.textContent = "選取";
       sel.onclick = () => { selected = w; renderWorn(); renderSizeTargets(); };
+      const save = document.createElement("button");
+      save.textContent = "收進衣櫃";
+      save.onclick = async () => {
+        const name = label.textContent ?? TYPE_LABELS[w.spec.type];
+        await wardrobe.put(await packGarment(w.spec, w.cutout, w.plainBack, { name, sizeText: w.sizeText, fabricText: w.fabricText }));
+        save.textContent = "已收藏";
+        save.disabled = true;
+        renderWardrobe();
+      };
+      li.append(save);
       const del = document.createElement("button");
       del.textContent = "脫下";
       del.onclick = () => { w.view?.dispose(); worn.splice(worn.indexOf(w), 1); if (selected === w) selected = worn[0] ?? null; renderWorn(); renderSizeTargets(); renderStyle(); };
       li.append(sel, del);
+      ul.appendChild(li);
+    }
+  };
+
+  const renderWardrobe = async () => {
+    const ul = $("wardrobe-list");
+    let items: SavedGarment[] = [];
+    try { items = await wardrobe.list(); } catch { ul.innerHTML = `<li class="hint">這個瀏覽器無法使用衣櫃（IndexedDB 被停用）</li>`; return; }
+    ul.innerHTML = items.length ? "" : `<li class="hint">還沒有收藏的衣服</li>`;
+    for (const g of items) {
+      const li = document.createElement("li");
+      const img = document.createElement("img");
+      img.src = URL.createObjectURL(g.thumb);
+      img.className = "swatch";
+      const label = document.createElement("span");
+      label.textContent = g.name;
+      const wearBtn = document.createElement("button");
+      wearBtn.textContent = "穿上";
+      wearBtn.onclick = async () => {
+        const cutout = await unpackCutout(g);
+        const w = await wear(structuredClone(g.spec), cutout, g.plainBack);
+        if (g.sizeText) {
+          w.sizeText = g.sizeText; w.fabricText = g.fabricText;
+          w.chart = parseSizeChart(g.sizeText);
+          const row = w.chart.rows.find((r) => r.size === w.spec.size);
+          if (row) w.fit = evaluateFit(row, meas, w.spec.type, w.spec.fabric, w.spec.sleeve);
+          renderStyle();
+        }
+      };
+      const del = document.createElement("button");
+      del.textContent = "刪除";
+      del.onclick = async () => { await wardrobe.remove(g.id); renderWardrobe(); };
+      li.append(img, label, wearBtn, del);
       ul.appendChild(li);
     }
   };
@@ -410,6 +458,8 @@ async function main() {
     }
     if (!chartTarget || !chart.rows.length) { $("size-buttons").innerHTML = ""; $("fit-table").innerHTML = ""; $("recommend").innerHTML = ""; return; }
     chartTarget.chart = chart;
+    chartTarget.sizeText = $<HTMLTextAreaElement>("size-text").value;
+    chartTarget.fabricText = $<HTMLTextAreaElement>("fabric-text").value;
     const rec = recommendSize(chart.rows, meas, chartTarget.spec.type, fabric, chartTarget.spec.sleeve)!;
     const box = $("size-buttons");
     box.innerHTML = "";
@@ -544,6 +594,7 @@ async function main() {
   fillBodyForm();
   applyLook();
   renderWorn();
+  renderWardrobe();
   renderSizeTargets();
   await applyBody(profile.targets);
 

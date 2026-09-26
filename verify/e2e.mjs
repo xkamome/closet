@@ -90,7 +90,7 @@ try {
   await check("garment photo is worn with its texture", async () => {
     await page.click('#tabs button[data-tab="wear"]');
     await page.setInputFiles("#garment-photo", "samples/tshirt.png");
-    await page.waitForFunction(() => !document.querySelector("#cutout-wrap").hidden && /判斷為/.test(document.querySelector("#guess-text").textContent), null, { timeout: 30000 });
+    await page.waitForFunction(() => !document.querySelector("#cutout-wrap").hidden && /判斷為/.test(document.querySelector("#guess-text").textContent), null, { timeout: 120000 });
     assert((await page.inputValue("#g-type")) === "top", "t-shirt photo should be guessed as a top");
     await page.click("#wear");
     await page.waitForFunction(() => window.__closet.worn.length === 1 && window.__closet.worn[0].view, null, { timeout: 30000 });
@@ -145,6 +145,20 @@ try {
     assert(types === "skirt,top", "worn " + types);
     await page.waitForTimeout(700);
     await shot("07-person-photo");
+  });
+
+  await check("wardrobe: save, take off, wear again", async () => {
+    await page.click("#worn-list li:first-child button:has-text('收進衣櫃')");
+    await page.waitForFunction(() => document.querySelectorAll("#wardrobe-list li button").length >= 2, null, { timeout: 20000 });
+    const savedType = await page.evaluate(() => window.__closet.worn[0].spec.type);
+    while (await page.locator("#worn-list li button:has-text('脫下')").count()) {
+      await page.click("#worn-list li:first-child button:has-text('脫下')");
+    }
+    assert((await page.evaluate(() => window.__closet.worn.length)) === 0, "all garments taken off");
+    await page.click("#wardrobe-list li:first-child button:has-text('穿上')");
+    await page.waitForFunction(() => window.__closet.worn.length === 1 && document.querySelector("#busy").hidden, null, { timeout: 60000 });
+    const t = await page.evaluate(() => window.__closet.worn[0].spec.type);
+    assert(t === savedType, `re-worn ${t} vs saved ${savedType}`);
   });
 
   await check("styling advice shows body shape and suggestions", async () => {
