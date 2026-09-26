@@ -278,7 +278,7 @@ def read_bvh(path, frame=0):
 
     # auto-guess Z-up like MakeHuman: look at a spine joint's first child offset
     zup = False
-    for ref in ["lowerleg02.L", "upperleg02.L", "spine01", "spine02", "spine03", "head"][::-1]:
+    for ref in ["lowerleg02.L", "upperleg02.L", "spine01", "spine02", "spine03", "head"]:  # MH pops from the end
         j = joints.get(ref)
         if j and j["children"]:
             off = joints[j["children"][0]]["offset"]
