@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
 
-const PORT = 5393;
+const PORT = 5400 + Math.floor(Math.random() * 500); // random: a stale server from an aborted run cannot collide
 const BASE = `http://127.0.0.1:${PORT}/`;
 fs.mkdirSync("_artifacts", { recursive: true });
 
@@ -38,6 +38,8 @@ try {
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
   await page.waitForTimeout(800);
   const shot = (n) => page.screenshot({ path: `_artifacts/e2e-${n}.png` });
+  // software rendering in CI: skip the ambient-occlusion pass so the UI stays responsive
+  await page.uncheck("#quality");
   await shot("01-loaded");
 
   await check("3D canvas is not blank", async () => {

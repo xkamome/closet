@@ -29,6 +29,8 @@ const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeou
 // ------------------------------------------------------------------ profile (persisted)
 interface Profile {
   targets: Targets;
+  /** extra MakeHuman morphs on top of the measurement solve (-1..1) */
+  extra?: Record<string, number>;
   weight?: number;
   skin: string;
   skinTint: string;
@@ -120,7 +122,7 @@ async function main() {
 
   const applyBody = async (targets: Targets) => busy(() => {
     const t0 = performance.now();
-    const res = solveMeasurements(body, measurer, targets, { weightKg: profile.weight });
+    const res = solveMeasurements(body, measurer, targets, { weightKg: profile.weight, extra: profile.extra });
     meas = res.measured;
     currentPose = buildPose(body, poseName === "half" ? "stand" : poseName);
     body.setPose(currentPose);
@@ -191,6 +193,8 @@ async function main() {
   document.querySelectorAll<HTMLButtonElement>("#pose-group button").forEach((b) =>
     b.addEventListener("click", () => setPose(b.dataset.pose as PoseName)));
   $<HTMLInputElement>("autorotate").addEventListener("change", (e) => stage.setAutoRotate((e.target as HTMLInputElement).checked));
+  $<HTMLInputElement>("quality").addEventListener("change", (e) => { stage.quality = (e.target as HTMLInputElement).checked; });
+  stage.onQualityDrop = () => { $<HTMLInputElement>("quality").checked = false; };
 
   // ------------------------------------------------------------ garments
   const layerOf = (w: Worn) => (w.underwear ? 0 : w.spec.type === "top" ? 2 : 1);
@@ -542,6 +546,27 @@ async function main() {
       $("ai-status").textContent = `無法連到 AI 中繼（${e.message}）。請在終端機執行 npm run bridge，或改用「複製提示詞」。`;
     } finally { btn.disabled = false; }
   });
+
+  // ------------------------------------------------------------ advanced shape sliders
+  const SLIDERS: [string, string][] = [
+    ["race-caucasian", "臉型：歐美"], ["race-african", "臉型：非洲"], ["muscle", "肌肉線條"], ["belly", "小腹"],
+    ["buttocks", "臀部豐滿"], ["firmness", "胸型挺度"], ["vshape", "倒三角"], ["torsodepth", "軀幹厚度"], ["neckheight", "脖子長"],
+  ];
+  const sliderBox = $("shape-sliders");
+  for (const [key, label] of SLIDERS) {
+    if (!data.morphs.has(key) && !data.morphs.has(key + "+")) continue;
+    const oneSided = key.startsWith("race-");
+    const v = profile.extra?.[key] ?? 0;
+    const row = document.createElement("label");
+    row.innerHTML = `<span>${label}</span><input type="range" min="${oneSided ? 0 : -1}" max="1" step="0.05" value="${v}" data-key="${key}"><output>${v.toFixed(2)}</output>`;
+    const input = row.querySelector("input")!;
+    input.addEventListener("input", () => {
+      row.querySelector("output")!.textContent = Number(input.value).toFixed(2);
+      profile.extra = { ...(profile.extra ?? {}), [key]: Number(input.value) };
+      store.save(profile);
+    });
+    sliderBox.appendChild(row);
+  }
 
   // ------------------------------------------------------------ appearance
   $<HTMLSelectElement>("skin").innerHTML = data.skins.map((s) => `<option value="${s.name}">${s.label}</option>`).join("");

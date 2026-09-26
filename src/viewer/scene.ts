@@ -3,6 +3,10 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 export type Framing = "full" | "half";
 
@@ -20,6 +24,13 @@ export class Stage {
   private tween: { from: THREE.Vector3; to: THREE.Vector3; tFrom: THREE.Vector3; tTo: THREE.Vector3; t: number } | null = null;
   private readonly timer = new THREE.Timer();
   onFrame: ((dt: number) => void) | null = null;
+  private composer: EffectComposer | null = null;
+  private gtao: GTAOPass | null = null;
+  /** ambient occlusion post-processing (contact shadows in folds, armpits, garment edges) */
+  quality = true;
+  /** called when ambient occlusion is switched off automatically because frames are too slow */
+  onQualityDrop: (() => void) | null = null;
+  private slowFrames = 0;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -35,7 +46,7 @@ export class Stage {
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environmentIntensity = 0.55;
-    this.scene.background = new THREE.Color(0xeeeae4);
+    this.scene.background = new THREE.Color(0xfff6ea); // the output pass tone-maps it to a warm studio grey
 
     this.camera = new THREE.PerspectiveCamera(30, 1, 0.05, 50);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -72,6 +83,20 @@ export class Stage {
     this.turntable.add(this.chair);
     this.scene.add(this.turntable);
 
+    try {
+      const rt = new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.HalfFloatType });
+      this.composer = new EffectComposer(this.renderer, rt);
+      this.composer.addPass(new RenderPass(this.scene, this.camera));
+      this.gtao = new GTAOPass(this.scene, this.camera, 1, 1);
+      this.gtao.updateGtaoMaterial({ radius: 0.09, distanceExponent: 1.5, thickness: 1.2, scale: 1.0, samples: 12 });
+      this.gtao.blendIntensity = 0.85;
+      this.composer.addPass(this.gtao);
+      this.composer.addPass(new OutputPass());
+    } catch (e) {
+      console.warn("ambient occlusion unavailable", e);
+      this.composer = null;
+    }
+
     new ResizeObserver(() => this.resize()).observe(container);
     this.resize();
     this.frame(true);
@@ -81,6 +106,9 @@ export class Stage {
   private resize(): void {
     const w = this.container.clientWidth || 1, h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h, false);
+    const pr = this.renderer.getPixelRatio();
+    this.composer?.setPixelRatio(pr);
+    this.composer?.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -108,7 +136,7 @@ export class Stage {
     let target: THREE.Vector3, pos: THREE.Vector3;
     const fov = THREE.MathUtils.degToRad(this.camera.fov);
     if (this.framing === "half") {
-      const top = h * 1.02, bottom = h * 0.5;
+      const top = h * 1.02, bottom = h * 0.58;
       const span = (top - bottom) * 1.15;
       const dist = Math.max(span / 2 / Math.tan(fov / 2), (span * 0.8) / aspect / 2 / Math.tan(fov / 2));
       target = new THREE.Vector3(0, (top + bottom) / 2, 0);
@@ -151,7 +179,16 @@ export class Stage {
     }
     this.onFrame?.(dt);
     this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+    if (this.quality && this.composer) {
+      this.composer.render(dt);
+      // adaptive quality: weak GPUs fall back to plain rendering
+      this.slowFrames = dt > 0.045 ? this.slowFrames + 1 : Math.max(0, this.slowFrames - 2);
+      if (this.slowFrames > 60) {
+        this.quality = false;
+        this.slowFrames = 0;
+        this.onQualityDrop?.();
+      }
+    } else this.renderer.render(this.scene, this.camera);
   }
 
   get seat(): number { return this.seatHeight; }

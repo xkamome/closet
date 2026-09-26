@@ -9,6 +9,11 @@
 > - Next: the single next step
 > - (optional) BLOCKER: exact error + what was tried
 
+## [2026-09-27 04:50] Wardrobe, advanced sliders, GTAO, perf
+- Done: IndexedDB wardrobe (save / re-wear incl. person-photo warp + size chart), advanced shape sliders (face ethnicity mix, muscle, belly, ...), GTAO ambient occlusion with adaptive fallback, kNN hash + y-bucket slicing (dress build ~240ms warm), e2e random port
+- Verified: verify.mjs all pass (41 unit, e2e 9/9)
+- Next: polish only
+
 ## [2026-09-27 04:05] Person photos, layering, cloth drape
 - Done: person-photo garments (MediaPipe multiclass seg + pose -> top/skirt/pants/dress, sleeve, hem; landmark-warped texture), top-over-bottom layering, PBD drape for sitting skirts, README, photo-measure calibration (+-4.5cm front only, +-2.3cm with side on synthetic renders)
 - Verified: verify.mjs all pass (41 unit tests, e2e 8/8)

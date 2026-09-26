@@ -46,7 +46,7 @@ export class Body {
     rest.set(this.data.base);
     for (const [key, raw] of Object.entries(values)) {
       if (!raw) continue;
-      const m = this.data.morphs.get(key + (raw > 0 ? "+" : "-"));
+      const m = this.data.morphs.get(key + (raw > 0 ? "+" : "-")) ?? (raw > 0 ? this.data.morphs.get(key) : undefined);
       if (!m) continue;
       const w = Math.abs(raw);
       const { idx, delta } = m;

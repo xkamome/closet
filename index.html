@@ -19,6 +19,7 @@
         <label class="toggle"><input type="checkbox" id="autorotate" /> 自動旋轉</label>
         <label class="toggle"><input type="checkbox" id="underwear" checked /> 內衣</label>
         <label class="toggle"><input type="checkbox" id="heatmap" /> 鬆緊分布</label>
+        <label class="toggle" title="環境光遮蔽：讓皺褶與衣物邊緣有真實陰影，較吃效能"><input type="checkbox" id="quality" checked /> 高畫質</label>
       </div>
       <div id="legend" hidden>
         <span><i style="background:#d91f1a"></i>穿不下</span><span><i style="background:#f28c1f"></i>偏緊</span>
@@ -65,6 +66,12 @@
           <label class="file">側面照（選填）<input id="photo-side" type="file" accept="image/*" /></label>
           <button id="photo-measure">從照片量身</button>
           <p class="hint" id="photo-status"></p>
+        </details>
+
+        <details id="advanced">
+          <summary>進階體型微調</summary>
+          <p class="hint">在三圍之外細調身形與臉型；調整後按「套用到假人」，三圍會重新對準。</p>
+          <div class="sliders" id="shape-sliders"></div>
         </details>
 
         <h2>外觀</h2>

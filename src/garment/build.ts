@@ -213,11 +213,30 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   // ---------- rings (hull per height) for the torso region
   const torsoTris = spec.type === "pants" || isBottom ? measurer.torsoLegs : measurer.torso;
   const ringCache = new Map<number, Ring>();
+  // triangles bucketed by height (1 cm) so each horizontal slice only visits nearby triangles
+  const bucketCache = new Map<Uint32Array, Map<number, Uint32Array>>();
+  const bucketsOf = (tris: Uint32Array) => {
+    let b = bucketCache.get(tris);
+    if (b) return b;
+    const tmp = new Map<number, number[]>();
+    for (let t = 0; t < tris.length; t += 3) {
+      const ya = rest[tris[t] * 3 + 1], yb = rest[tris[t + 1] * 3 + 1], yc = rest[tris[t + 2] * 3 + 1];
+      const lo = Math.floor(Math.min(ya, yb, yc) * 100), hi = Math.floor(Math.max(ya, yb, yc) * 100);
+      for (let k = lo; k <= hi; k++) {
+        const arr = tmp.get(k);
+        if (arr) arr.push(tris[t], tris[t + 1], tris[t + 2]); else tmp.set(k, [tris[t], tris[t + 1], tris[t + 2]]);
+      }
+    }
+    b = new Map([...tmp].map(([k, v]) => [k, Uint32Array.from(v)]));
+    bucketCache.set(tris, b);
+    return b;
+  };
+  const EMPTY = new Uint32Array(0);
   const ringAt = (y: number, tris = torsoTris): Ring => {
     const key = Math.round(y * 400) + (tris === torsoTris ? 0 : 1e6);
     const hit = ringCache.get(key);
     if (hit) return hit;
-    const pts = slice(rest, tris, [0, y, 0], [0, 1, 0], [1, 0, 0], [0, 0, 1]);
+    const pts = slice(rest, bucketsOf(tris).get(Math.floor(y * 100)) ?? EMPTY, [0, y, 0], [0, 1, 0], [1, 0, 0], [0, 0, 1]);
     const hull = convexHull(pts);
     let cx = 0, cz = 0;
     for (let i = 0; i < hull.length; i += 2) { cx += hull[i]; cz += hull[i + 1]; }
@@ -386,7 +405,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const legGirth = (y: number) => {
     const k = Math.round(y * 200);
     if (!legRingCache.has(k)) {
-      const pts = slice(rest, measurer.legL, [0, y, 0], [0, 1, 0], [1, 0, 0], [0, 0, 1]);
+      const pts = slice(rest, bucketsOf(measurer.legL).get(Math.floor(y * 100)) ?? EMPTY, [0, y, 0], [0, 1, 0], [1, 0, 0], [0, 0, 1]);
       legRingCache.set(k, pts.length >= 6 ? perimeter(convexHull(pts)) : 0.3);
     }
     return legRingCache.get(k)!;
@@ -445,11 +464,40 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     const ys: number[] = [];
     for (let L = 0; L <= count; L++) ys.push(top - ((top - hemY) * L) / count);
     // nearest-body-vertex skinning (k nearest, inverse distance) using rest torso/leg vertices
-    const cand: number[] = [];
+    // candidate body vertices in a spatial hash (4 cm cells)
+    const CELL = 0.04;
+    const hash = new Map<number, number[]>();
+    const hk = (x: number, y: number, z: number) => ((x + 256) * 512 + (y + 256)) * 512 + (z + 256);
     for (let i = 0; i < nBody; i++) {
       const rg = measurer.regions[i];
-      if ((rg === 0 || rg === 2) && rest[i * 3 + 1] < top + 0.08 && rest[i * 3 + 1] > hemY - 0.05) cand.push(i);
+      if (!((rg === 0 || rg === 2) && rest[i * 3 + 1] < top + 0.08 && rest[i * 3 + 1] > hemY - 0.05)) continue;
+      const k = hk(Math.floor(rest[i * 3] / CELL), Math.floor(rest[i * 3 + 1] / CELL), Math.floor(rest[i * 3 + 2] / CELL));
+      const c = hash.get(k);
+      if (c) c.push(i); else hash.set(k, [i]);
     }
+    const nearest6 = (x: number, y: number, z: number): [number, number][] => {
+      const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL), cz = Math.floor(z / CELL);
+      const best: [number, number][] = [];
+      for (let r = 1; r <= 8; r++) {
+        best.length = 0;
+        for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) {
+          const c = hash.get(hk(cx + dx, cy + dy, cz + dz));
+          if (!c) continue;
+          for (const i of c) {
+            const ex = rest[i * 3] - x, ey = rest[i * 3 + 1] - y, ez = rest[i * 3 + 2] - z;
+            const d2 = ex * ex + ey * ey * 4 + ez * ez;
+            if (best.length < 6 || d2 < best[best.length - 1][0]) {
+              best.push([d2, i]);
+              best.sort((p, q) => p[0] - q[0]);
+              if (best.length > 6) best.pop();
+            }
+          }
+        }
+        // results are exact once the 6th neighbour is closer than the searched radius
+        if (best.length === 6 && Math.sqrt(best[5][0]) <= r * CELL) break;
+      }
+      return best;
+    };
     for (let L = 0; L <= count; L++) {
       const y = ys[L];
       const tk = (top - y) / Math.max(1e-6, top - hemY);
@@ -464,16 +512,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
         const x = ACX + Math.sin(a) * r, z = ACZ + Math.cos(a) * r;
         work.pos.push(x, y, z);
         work.nor.push(Math.sin(a), 0, Math.cos(a));
-        const best: [number, number][] = [];
-        for (const i of cand) {
-          const dx = rest[i * 3] - x, dy = rest[i * 3 + 1] - y, dz = rest[i * 3 + 2] - z;
-          const d2 = dx * dx + dy * dy * 4 + dz * dz;
-          if (best.length < 6 || d2 < best[best.length - 1][0]) {
-            best.push([d2, i]);
-            best.sort((p, q) => p[0] - q[0]);
-            if (best.length > 6) best.pop();
-          }
-        }
+        const best = nearest6(x, y, z);
         const acc = new Map<number, number>();
         for (const [d2, i] of best) {
           const w = 1 / (Math.sqrt(d2) + 0.01);
