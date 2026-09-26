@@ -18,7 +18,7 @@ export class Stage {
   private seatHeight = 0;
   private readonly chair: THREE.Group;
   private tween: { from: THREE.Vector3; to: THREE.Vector3; tFrom: THREE.Vector3; tTo: THREE.Vector3; t: number } | null = null;
-  private readonly clock = new THREE.Clock();
+  private readonly timer = new THREE.Timer();
   onFrame: ((dt: number) => void) | null = null;
 
   constructor(container: HTMLElement) {
@@ -29,7 +29,7 @@ export class Stage {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     container.appendChild(this.renderer.domElement);
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -139,7 +139,8 @@ export class Stage {
   }
 
   private loop(): void {
-    const dt = Math.min(this.clock.getDelta(), 0.1);
+    this.timer.update();
+    const dt = Math.min(this.timer.getDelta(), 0.1);
     if (this.tween) {
       const tw = this.tween;
       tw.t = Math.min(1, tw.t + dt / 0.6);

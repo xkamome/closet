@@ -9,6 +9,11 @@
 > - Next: the single next step
 > - (optional) BLOCKER: exact error + what was tried
 
+## [2026-09-27 03:10] M3-M6 app complete, verify passes
+- Done: garment geometry (ease-based grid + skirt cone, Taubin tension, collision), photo cutout + bleed atlas, underwear, full UI (身形/試穿/尺寸/穿搭), AI bridge (claude -p), MediaPipe photo measuring, e2e
+- Verified: node verify/verify.mjs -> all checks passed (build, 36 unit tests, bridge, browser e2e 7/7)
+- Next (quality): skirt drape when sitting (cloth sim), photo-measure self-check, perf of cone skinning, README
+
 ## [2026-09-27 02:20] M2 runtime + logic modules
 - Done: src/avatar (data, body w/ CPU skinning, poses incl. procedural chair-sit, measure, solver); src/viewer (scene, avatarView); src/fit (sizeChart, fabric, fit); src/style (bodyShape, advice); src/garment/spec
 - Verified: vitest 35/35 pass; tsc clean; screenshots in _artifacts show avatar + poses OK (BVH axis-guess bug fixed)

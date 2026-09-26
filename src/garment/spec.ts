@@ -26,6 +26,28 @@ export interface GarmentSpec {
   m: Partial<Record<GarmentKey, number>>;
   fabric: Fabric;
   size?: string;
+  /** optional horizontal cuts (cm from the floor) — used for underwear bands */
+  cut?: { topY?: number; bottomY?: number };
+  /** colour used when there is no photo */
+  color?: string;
+}
+
+/** Underwear set (bra + briefs) so the mannequin is dressed for fitting. */
+export function underwearSpecs(body: { bust: number; waist: number; hips: number; thigh: number; bustY: number; crotchY: number; underbust: number; height: number }, color = "#e9d6c8"): GarmentSpec[] {
+  const knit = { ...DEFAULT_FABRIC, structure: "knit" as const, stretch: 0.3, drape: 0.6, thickness: 0.0012, sheen: 0.35, label: "彈性針織" };
+  const s = body.height / 160;
+  return [
+    {
+      type: "top", sleeve: "none", neckline: "boat", silhouette: "fitted", rise: "natural", fabric: knit, color,
+      m: { chest: body.bust - 1, waist: body.underbust - 2 },
+      cut: { topY: body.bustY + 5.5 * s, bottomY: body.bustY - 9.5 * s },
+    },
+    {
+      type: "pants", sleeve: "none", neckline: "crew", silhouette: "fitted", rise: "low", fabric: knit, color,
+      m: { waist: body.waist + 4, hip: body.hips - 2, thigh: body.thigh - 3, legOpening: body.thigh - 3 },
+      cut: { bottomY: body.crotchY - 2.5 * s },
+    },
+  ];
 }
 
 /** Sensible default measurements (cm) for a garment on a body with the given key girths. */

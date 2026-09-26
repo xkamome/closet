@@ -4,9 +4,133 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Closet 試衣間</title>
+  <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
-  <div id="app"></div>
+  <div id="layout">
+    <section id="stage">
+      <div id="viewport"></div>
+      <div id="toolbar" role="toolbar" aria-label="姿勢與顯示">
+        <div class="seg" id="pose-group">
+          <button id="pose-stand" data-pose="stand" class="on">站姿</button>
+          <button id="pose-sit" data-pose="sit">坐姿</button>
+          <button id="pose-half" data-pose="half">半身</button>
+        </div>
+        <label class="toggle"><input type="checkbox" id="autorotate" /> 自動旋轉</label>
+        <label class="toggle"><input type="checkbox" id="underwear" checked /> 內衣</label>
+        <label class="toggle"><input type="checkbox" id="heatmap" /> 鬆緊分布</label>
+      </div>
+      <div id="legend" hidden>
+        <span><i style="background:#d91f1a"></i>穿不下</span><span><i style="background:#f28c1f"></i>偏緊</span>
+        <span><i style="background:#40b359"></i>合身</span><span><i style="background:#4f73d9"></i>寬鬆</span>
+      </div>
+      <div id="loading">載入假人模型中…</div>
+      <div id="busy" hidden>計算中…</div>
+    </section>
+
+    <aside id="panel">
+      <header>
+        <h1>Closet 試衣間</h1>
+        <nav id="tabs" role="tablist">
+          <button role="tab" data-tab="body" class="on">身形</button>
+          <button role="tab" data-tab="wear">試穿</button>
+          <button role="tab" data-tab="size">尺寸</button>
+          <button role="tab" data-tab="style">穿搭</button>
+        </nav>
+      </header>
+
+      <!-- 身形 -->
+      <div class="tab" id="tab-body">
+        <h2>三圍與尺寸 <small>公分／公斤</small></h2>
+        <div class="grid2" id="body-form">
+          <label>身高<input id="m-height" type="number" step="0.5" min="130" max="200" /></label>
+          <label>體重<input id="m-weight" type="number" step="0.5" min="30" max="150" /></label>
+          <label>胸圍<input id="m-bust" type="number" step="0.5" /></label>
+          <label>下胸圍<input id="m-underbust" type="number" step="0.5" placeholder="選填" /></label>
+          <label>腰圍<input id="m-waist" type="number" step="0.5" /></label>
+          <label>臀圍<input id="m-hips" type="number" step="0.5" /></label>
+          <label>肩寬<input id="m-shoulder" type="number" step="0.5" placeholder="選填" /></label>
+          <label>跨下長<input id="m-inseam" type="number" step="0.5" placeholder="選填" /></label>
+          <label>臂長<input id="m-armLength" type="number" step="0.5" placeholder="選填" /></label>
+          <label>大腿圍<input id="m-thigh" type="number" step="0.5" placeholder="選填" /></label>
+        </div>
+        <button id="apply-body" class="primary">套用到假人</button>
+        <p class="hint" id="solve-status"></p>
+        <table class="kv" id="measured-table"></table>
+
+        <details>
+          <summary>用照片自動量身</summary>
+          <p class="hint">請上傳全身正面照（穿貼身衣物、手臂稍微張開、背景單純），可再加一張側面照提高準確度。需要先填身高。</p>
+          <label class="file">正面照<input id="photo-front" type="file" accept="image/*" /></label>
+          <label class="file">側面照（選填）<input id="photo-side" type="file" accept="image/*" /></label>
+          <button id="photo-measure">從照片量身</button>
+          <p class="hint" id="photo-status"></p>
+        </details>
+
+        <h2>外觀</h2>
+        <div class="grid2">
+          <label>膚色<select id="skin"></select></label>
+          <label>膚色微調<input id="skin-tint" type="color" value="#ffffff" /></label>
+          <label>髮型<select id="hair"></select></label>
+          <label>髮色<input id="hair-color" type="color" value="#3b2a20" /></label>
+        </div>
+      </div>
+
+      <!-- 試穿 -->
+      <div class="tab" id="tab-wear" hidden>
+        <h2>上傳衣服照片</h2>
+        <p class="hint">商品平拍照或白底照效果最好。系統會自動去背、判斷版型，你也可以手動修改。</p>
+        <label class="file big">選擇照片<input id="garment-photo" type="file" accept="image/*" /></label>
+        <div id="cutout-wrap" hidden><canvas id="cutout-preview"></canvas><p class="hint" id="guess-text"></p></div>
+        <div class="grid2">
+          <label>類型<select id="g-type"><option value="top">上衣</option><option value="dress">洋裝</option><option value="skirt">裙子</option><option value="pants">長褲</option></select></label>
+          <label>版型<select id="g-silhouette"><option value="fitted">合身</option><option value="straight" selected>直筒</option><option value="aline">A 字</option><option value="oversized">寬鬆</option></select></label>
+          <label>袖長<select id="g-sleeve"><option value="none">無袖</option><option value="short" selected>短袖</option><option value="elbow">五分袖</option><option value="long">長袖</option></select></label>
+          <label>領口<select id="g-neck"><option value="crew">圓領</option><option value="v">V 領</option><option value="scoop">U 領</option><option value="boat">一字領</option></select></label>
+          <label>腰線<select id="g-rise"><option value="high">高腰</option><option value="natural" selected>中腰</option><option value="low">低腰</option></select></label>
+          <label>純色<input id="g-color" type="color" value="#7a93b8" /></label>
+        </div>
+        <label class="toggle"><input type="checkbox" id="g-plainback" /> 背面用素色（正面有圖案時建議勾選）</label>
+        <div class="row">
+          <button id="wear" class="primary">穿上</button>
+          <button id="wear-plain">用純色試穿</button>
+        </div>
+        <h2>身上的衣服</h2>
+        <ul id="worn-list" class="list"></ul>
+      </div>
+
+      <!-- 尺寸 -->
+      <div class="tab" id="tab-size" hidden>
+        <h2>貼上商品尺寸表</h2>
+        <p class="hint">直接從購物網站複製尺寸表文字貼上，支援平量（胸寬）與圍度、S/M/L 或數字尺碼、公分或英吋。</p>
+        <textarea id="size-text" rows="6" placeholder="尺寸 肩寬 胸圍 衣長 袖長&#10;S 36 88 60 18&#10;M 37 92 62 19&#10;L 38 96 64 20"></textarea>
+        <h2>材質</h2>
+        <textarea id="fabric-text" rows="2" placeholder="例：棉95% 彈性纖維5% 針織"></textarea>
+        <div class="row">
+          <label>套用到<select id="size-target"></select></label>
+          <button id="parse-size" class="primary">分析尺寸</button>
+        </div>
+        <p class="hint" id="size-warnings"></p>
+        <div id="fabric-info"></div>
+        <div id="size-buttons" class="chips"></div>
+        <div id="recommend"></div>
+        <table class="fit" id="fit-table"></table>
+      </div>
+
+      <!-- 穿搭 -->
+      <div class="tab" id="tab-style" hidden>
+        <div id="advice"></div>
+        <h2>AI 深度建議 <small>用本機 Claude Code 的訂閱登入</small></h2>
+        <textarea id="ai-question" rows="2" placeholder="想問的問題（選填），例如：這件裙子要配什麼鞋？"></textarea>
+        <div class="row">
+          <button id="ai-ask" class="primary">問 AI</button>
+          <button id="ai-copy">複製提示詞</button>
+        </div>
+        <p class="hint" id="ai-status">需要先在終端機執行 <code>npm run bridge</code>。沒有啟動時可以按「複製提示詞」貼到 claude.ai。</p>
+        <div id="ai-answer"></div>
+      </div>
+    </aside>
+  </div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

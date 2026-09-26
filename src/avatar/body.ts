@@ -57,7 +57,46 @@ export class Body {
         rest[o + 2] += delta[d + 2] * w;
       }
     }
+    this.smoothNipples();
     this.updateSkeleton();
+  }
+
+  private nippleRegion: { verts: number[]; nbrs: number[][] } | null = null;
+  /** Mannequin finish: relax the nipple area so garments drape cleanly over the bust. */
+  private smoothNipples(): void {
+    const d = this.data, rest = this.rest;
+    if (!this.nippleRegion) {
+      const centers = ["breast.L____tail", "breast.R____tail"].map((n) => d.jointNames.indexOf(n)).filter((j) => j >= 0)
+        .map((j) => d.joints[j]);
+      const set = new Set<number>();
+      for (const vs of centers) {
+        let cx = 0, cy = 0, cz = 0;
+        for (const v of vs) { cx += d.base[v * 3]; cy += d.base[v * 3 + 1]; cz += d.base[v * 3 + 2]; }
+        cx /= vs.length; cy /= vs.length; cz /= vs.length;
+        for (let i = 0; i < d.bodyVertexCount; i++) {
+          if (Math.hypot(d.base[i * 3] - cx, d.base[i * 3 + 1] - cy, d.base[i * 3 + 2] - cz) < 0.028) set.add(i);
+        }
+      }
+      const verts = [...set];
+      const nb = new Map<number, Set<number>>(verts.map((v) => [v, new Set<number>()]));
+      const idx = d.body.index, src = d.body.src;
+      for (let t = 0; t < idx.length; t += 3) {
+        const tri = [src[idx[t]], src[idx[t + 1]], src[idx[t + 2]]];
+        for (const a of tri) if (nb.has(a)) for (const b of tri) if (b !== a) nb.get(a)!.add(b);
+      }
+      this.nippleRegion = { verts, nbrs: verts.map((v) => [...nb.get(v)!]) };
+    }
+    const { verts, nbrs } = this.nippleRegion;
+    const tmp = new Float32Array(verts.length * 3);
+    for (let it = 0; it < 24; it++) {
+      verts.forEach((v, k) => {
+        let x = 0, y = 0, z = 0;
+        for (const u of nbrs[k]) { x += rest[u * 3]; y += rest[u * 3 + 1]; z += rest[u * 3 + 2]; }
+        const n = nbrs[k].length || 1;
+        tmp[k * 3] = (rest[v * 3] + x / n) / 2; tmp[k * 3 + 1] = (rest[v * 3 + 1] + y / n) / 2; tmp[k * 3 + 2] = (rest[v * 3 + 2] + z / n) / 2;
+      });
+      verts.forEach((v, k) => { rest[v * 3] = tmp[k * 3]; rest[v * 3 + 1] = tmp[k * 3 + 1]; rest[v * 3 + 2] = tmp[k * 3 + 2]; });
+    }
   }
 
   private updateSkeleton(): void {

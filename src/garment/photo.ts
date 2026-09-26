@@ -203,15 +203,17 @@ export function buildAtlas(c: Cutout | null, opts: AtlasOptions, fallbackColor =
   // vertical: photo top/bottom -> garment top/bottom
   const sy = S / c.height;
   const drawW = c.width * sx, drawH = c.height * sy;
+  // low-res "bleed" layer: every pixel outside the garment takes the colour of the nearest garment
+  // pixel, so parts of the 3D garment that fall outside the flat photo (hanging sleeves, sides)
+  // continue the fabric instead of showing a flat average colour.
+  const bleed = bleedFill(c, sx, drawW, drawH, S);
   const drawFront = (x0: number, mirror: boolean) => {
     ctx.save();
     const cxAtlas = x0 + S / 2;
     ctx.translate(cxAtlas, 0);
     if (mirror) ctx.scale(-1, 1);
-    // paint an edge-bleed first (blurred, larger) so seams / sleeve ends pick up garment colours
-    ctx.filter = "blur(18px)";
-    ctx.drawImage(c.canvas, -c.centerX * sx * 1.04, -8, drawW * 1.04, drawH + 16);
-    ctx.filter = "none";
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bleed, -S / 2, 0, S, S);
     ctx.drawImage(c.canvas, -c.centerX * sx, 0, drawW, drawH);
     ctx.restore();
   };
@@ -220,10 +222,50 @@ export function buildAtlas(c: Cutout | null, opts: AtlasOptions, fallbackColor =
     drawFront(S, true);
     // soften the back so front-only graphics read as fabric, not as a second print
     ctx.save();
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = 0.22;
     ctx.fillStyle = base;
     ctx.fillRect(S, 0, S, S);
     ctx.restore();
   }
+  return cnv;
+}
+
+/** Nearest-colour fill (iterative dilation) of the photo placed in a half-atlas, at low resolution. */
+function bleedFill(c: Cutout, sx: number, drawW: number, drawH: number, S: number): HTMLCanvasElement {
+  const R = 192;
+  const k = R / S;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = R;
+  const ctx = cnv.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(c.canvas, R / 2 - c.centerX * sx * k, 0, drawW * k, drawH * k);
+  const img = ctx.getImageData(0, 0, R, R);
+  const d = img.data;
+  const filled = new Uint8Array(R * R);
+  for (let i = 0; i < R * R; i++) filled[i] = d[i * 4 + 3] > 200 ? 1 : 0;
+  let frontier = true;
+  for (let pass = 0; pass < R && frontier; pass++) {
+    frontier = false;
+    const next = filled.slice();
+    for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
+      const i = y * R + x;
+      if (filled[i]) continue;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= R || yy >= R) continue;
+        const j = yy * R + xx;
+        if (!filled[j]) continue;
+        r += d[j * 4]; g += d[j * 4 + 1]; b += d[j * 4 + 2]; n++;
+      }
+      if (n) {
+        d[i * 4] = r / n; d[i * 4 + 1] = g / n; d[i * 4 + 2] = b / n; d[i * 4 + 3] = 255;
+        next[i] = 1;
+        frontier = true;
+      }
+    }
+    filled.set(next);
+  }
+  for (let i = 0; i < R * R; i++) d[i * 4 + 3] = 255;
+  ctx.putImageData(img, 0, 0);
   return cnv;
 }

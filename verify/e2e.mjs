@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+// Browser acceptance test (憲法 III.3): builds on `npm run build` output, serves it with
+// `vite preview`, drives the real UI in headless Chromium and saves screenshots to _artifacts/.
+
+import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { chromium } from "playwright";
+
+const PORT = 5393;
+const BASE = `http://127.0.0.1:${PORT}/`;
+fs.mkdirSync("_artifacts", { recursive: true });
+
+const server = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "preview", "--port", String(PORT), "--strictPort", "--host", "127.0.0.1"],
+  { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+let serverLog = "";
+server.stdout.on("data", (d) => (serverLog += d));
+server.stderr.on("data", (d) => (serverLog += d));
+
+const failures = [];
+const errors = [];
+const check = async (name, fn) => {
+  try { await fn(); console.log("PASS", name); } catch (e) { failures.push(`FAIL ${name}: ${e.message}`); console.log("FAIL", name, e.message); }
+};
+const assert = (c, m) => { if (!c) throw new Error(m); };
+
+let browser;
+try {
+  for (let i = 0; i < 100; i++) {
+    try { const r = await fetch(BASE); if (r.ok) break; } catch { /* starting */ }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
+  await page.goto(BASE);
+  await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
+  await page.waitForTimeout(800);
+  const shot = (n) => page.screenshot({ path: `_artifacts/e2e-${n}.png` });
+  await shot("01-loaded");
+
+  await check("3D canvas is not blank", async () => {
+    const stats = await page.evaluate(() => {
+      const c = document.querySelector("#viewport canvas");
+      const tmp = document.createElement("canvas");
+      tmp.width = 200; tmp.height = 200;
+      const ctx = tmp.getContext("2d");
+      ctx.drawImage(c, 0, 0, 200, 200);
+      const d = ctx.getImageData(0, 0, 200, 200).data;
+      const bg = [d[0], d[1], d[2]];
+      let diff = 0;
+      for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 40) diff++;
+      return diff / (200 * 200);
+    });
+    assert(stats > 0.04, `only ${(stats * 100).toFixed(1)}% of pixels differ from background`);
+  });
+
+  await check("body measurements applied within 2cm", async () => {
+    const t = { height: 165, bust: 88, waist: 68, hips: 94 };
+    for (const [k, v] of Object.entries(t)) await page.fill(`#m-${k}`, String(v));
+    await page.fill("#m-weight", "56");
+    await page.click("#apply-body");
+    await page.waitForFunction(() => /已套用/.test(document.querySelector("#solve-status").textContent) && document.querySelector("#busy").hidden, null, { timeout: 60000 });
+    await page.waitForFunction(() => window.__closet.measurements.height > 164, null, { timeout: 20000 });
+    const shown = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll("#measured-table td[data-k]")].map((td) => [td.dataset.k, parseFloat(td.textContent)])));
+    for (const [k, v] of Object.entries(t)) assert(Math.abs(shown[k] - v) <= 2, `${k}: shown ${shown[k]} vs target ${v}`);
+  });
+
+  await check("pose buttons & auto-rotate", async () => {
+    await page.click("#pose-sit");
+    await page.waitForFunction(() => window.__closet.pose === "sit" && window.__closet.poseSettled, null, { timeout: 20000 });
+    await page.waitForTimeout(900);
+    const stool = await page.evaluate(() => window.__closet.stage.scene.getObjectByName("stool").visible);
+    assert(stool, "stool should be visible when sitting");
+    await shot("02-sit");
+    await page.click("#pose-half");
+    await page.waitForFunction(() => window.__closet.pose === "half" && window.__closet.poseSettled, null, { timeout: 20000 });
+    await page.waitForTimeout(900);
+    await shot("03-half");
+    await page.click("#pose-stand");
+    await page.waitForFunction(() => window.__closet.pose === "stand" && window.__closet.poseSettled, null, { timeout: 20000 });
+    await page.check("#autorotate");
+    assert(await page.evaluate(() => window.__closet.stage.autoRotate), "auto-rotate on");
+    await page.uncheck("#autorotate");
+    assert(!(await page.evaluate(() => window.__closet.stage.autoRotate)), "auto-rotate off");
+    await page.waitForTimeout(900);
+  });
+
+  await check("garment photo is worn with its texture", async () => {
+    await page.click('#tabs button[data-tab="wear"]');
+    await page.setInputFiles("#garment-photo", "samples/tshirt.png");
+    await page.waitForFunction(() => !document.querySelector("#cutout-wrap").hidden && /判斷為/.test(document.querySelector("#guess-text").textContent), null, { timeout: 30000 });
+    assert((await page.inputValue("#g-type")) === "top", "t-shirt photo should be guessed as a top");
+    await page.click("#wear");
+    await page.waitForFunction(() => window.__closet.worn.length === 1 && window.__closet.worn[0].view, null, { timeout: 30000 });
+    const red = await page.evaluate(() => {
+      const w = window.__closet.worn[0];
+      const mesh = window.__closet.stage.scene.getObjectByName("garment-top");
+      if (!mesh) return -1;
+      const img = w.view.material.map.image;
+      const ctx = img.getContext("2d");
+      const d = ctx.getImageData(0, 0, img.width / 2, img.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 16) if (d[i] > 170 && d[i + 1] < 120 && d[i + 2] < 130) n++;
+      return n / (d.length / 16);
+    });
+    assert(red > 0.05, `garment texture should contain the photo's red stripes (got ${red})`);
+    await page.waitForTimeout(700);
+    await shot("04-worn");
+  });
+
+  await check("size chart gives per-region fit and a recommended size", async () => {
+    await page.click('#tabs button[data-tab="size"]');
+    await page.fill("#size-text", fs.readFileSync("samples/size-chart.txt", "utf8"));
+    await page.fill("#fabric-text", fs.readFileSync("samples/fabric.txt", "utf8"));
+    await page.click("#parse-size");
+    await page.waitForFunction(() => document.querySelectorAll("#fit-table .status").length >= 2 && document.querySelector("#busy").hidden, null, { timeout: 30000 });
+    const rec = await page.textContent("#recommend-card");
+    assert(/推薦尺碼：\s*(S|M|L|XL)/.test(rec), "recommendation card: " + rec);
+    const statuses = await page.$$eval("#fit-table .status", (xs) => xs.map((x) => x.textContent));
+    assert(statuses.every((s) => /過小|偏緊|合身|寬鬆|過大|偏短|剛好|偏長/.test(s)), "statuses " + statuses);
+    await page.click('#size-buttons button[data-size="S"]');
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && document.querySelector("#size-buttons button.on")?.dataset.size === "S", null, { timeout: 30000 });
+    await page.check("#heatmap");
+    await page.waitForTimeout(700);
+    await shot("05-size-S-heatmap");
+    await page.uncheck("#heatmap");
+  });
+
+  await check("styling advice shows body shape and suggestions", async () => {
+    await page.click('#tabs button[data-tab="style"]');
+    const h = await page.textContent("#shape-card h3");
+    assert(/沙漏型|梨型|蘋果型|H 型|倒三角型/.test(h), "shape headline: " + h);
+    const items = await page.$$eval("#advice li", (xs) => xs.length);
+    assert(items >= 8, "advice items " + items);
+    await shot("06-style");
+  });
+
+  await check("no console errors", async () => {
+    assert(errors.length === 0, errors.slice(0, 5).join(" | "));
+  });
+} catch (e) {
+  failures.push("FAIL e2e crashed: " + e.message + "\n" + serverLog.slice(-800));
+} finally {
+  await browser?.close();
+  server.kill();
+}
+if (failures.length) { console.error(failures.join("\n")); process.exit(1); }
+console.log("e2e: all checks passed");

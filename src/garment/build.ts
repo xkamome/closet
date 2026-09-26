@@ -141,7 +141,8 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const waistline = spec.rise === "high" ? waistY + 0.03 : spec.rise === "low" ? waistY - 0.06 : waistY;
   const isBottom = spec.type === "skirt" || spec.type === "pants";
   const length = g("length") ?? (spec.type === "top" ? 0.6 : spec.type === "dress" ? 1.0 : spec.type === "skirt" ? 0.55 : 0.95);
-  const hemY = Math.max(minY + 0.015, (isBottom ? waistline : neckY - 0.01) - length);
+  const hemY = spec.cut?.bottomY !== undefined ? Y(spec.cut.bottomY)
+    : Math.max(minY + 0.015, (isBottom ? waistline : neckY - 0.01) - length);
   const needsCone = spec.type === "skirt" || spec.type === "dress" || (spec.type === "top" && hemY < hipY + 0.03);
   const coneTop = hipY;
   // the upper piece tucks 3cm under the skirt/cone so the junction never shows a gap
@@ -158,13 +159,50 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     ? [[waistline + 0.05, Gw], [waistline, Gw], [hipY, Ghip], [hemY, Ghem]]
     : [[bustY, Gc], [waistY, Gw], [hipY, needsCone ? Ghip : Math.max(Ghip, Ghem)], [hemY, Ghem]];
   keys.sort((a, b) => b[0] - a[0]);
-  const girthAt = (y: number): number => {
+  const girthAtRaw = (y: number): number => {
     if (y >= keys[0][0]) return keys[0][1];
     for (let k = 0; k < keys.length - 1; k++) {
       const [y0, g0] = keys[k], [y1, g1] = keys[k + 1];
       if (y <= y0 && y >= y1) return g0 + ((g1 - g0) * (y0 - y)) / Math.max(1e-6, y0 - y1);
     }
     return keys[keys.length - 1][1];
+  };
+
+  // ease (garment girth - body girth) interpolated between key heights, so fitted garments follow
+  // the body's own curves; below the hip line of skirts the absolute girth (hip -> hem) is used.
+  let easeKeysCache: [number, number][] | null = null;
+  const easeKeysGet = (): [number, number][] => {
+    if (easeKeysCache) return easeKeysCache;
+    if (isBottom) return (easeKeysCache = keys.map(([y, gv]) => [y, gv - bodyGirthAt(y)] as [number, number]));
+    // tops: ease is defined at bust / waist / hip and fades toward the shoulders and neck
+    const shoulderY = Y(m.shoulderY);
+    const eb = Gc - bodyGirthAt(bustY);
+    const k: [number, number][] = [
+      [neckY + 0.03, Math.max(TAU * th, eb * 0.15)],
+      [shoulderY - 0.015, Math.max(TAU * th, eb * 0.45)],
+      [bustY + 0.06, eb],
+      [bustY, eb],
+      [waistY, Gw - bodyGirthAt(waistY)],
+      [hipY, Ghip - bodyGirthAt(hipY)],
+    ];
+    if (spec.m.hem !== undefined && !needsCone && hemY < hipY) k.push([hemY, Ghem - bodyGirthAt(hemY)]);
+    return (easeKeysCache = k.filter(([y]) => y >= hemY - 0.001).sort((a, b) => b[0] - a[0]));
+  };
+  function bodyGirthAt(y: number): number {
+    const tris = y < (isBottom ? waistline : waistY) - 0.02 ? measurer.torsoLegs : torsoTris;
+    return ringAt(Math.max(y, minY + 0.02), tris).P;
+  }
+  const girthAt = (y: number): number => {
+    if (needsCone && y < coneTop) return girthAtRaw(y);
+    if (spec.type === "pants" && y < crotchY + 0.02) return girthAtRaw(y);
+    const easeKeys = easeKeysGet();
+    let e = easeKeys[easeKeys.length - 1][1];
+    if (y >= easeKeys[0][0]) e = easeKeys[0][1];
+    else for (let k = 0; k < easeKeys.length - 1; k++) {
+      const [y0, e0] = easeKeys[k], [y1, e1] = easeKeys[k + 1];
+      if (y <= y0 && y >= y1) { e = e0 + ((e1 - e0) * (y0 - y)) / Math.max(1e-6, y0 - y1); break; }
+    }
+    return bodyGirthAt(y) + e;
   };
 
   // ---------- rings (hull per height) for the torso region
@@ -183,7 +221,6 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     ringCache.set(key, r);
     return r;
   };
-  const bustRing = ringAt(bustY, measurer.torso);
 
   // ---------- working mesh from body triangles
   const bones = data.bones.map((b) => b.name);
@@ -271,12 +308,19 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
       return sleeveLen - armT(P(work, v));
     });
   }
+  if (spec.cut?.topY !== undefined) {
+    const cutTop = Y(spec.cut.topY);
+    work = clip(work, (v) => cutTop - work.pos[v * 3 + 1]);
+  }
   // hem / bottom edge of the upper piece
   work = clip(work, (v) => work.pos[v * 3 + 1] - upperBottom);
   // waistline for bottoms
   if (isBottom) work = clip(work, (v) => waistline - work.pos[v * 3 + 1]);
   // pants: remove feet / lower legs below the hem
-  if (spec.type === "pants") work = clip(work, (v) => work.pos[v * 3 + 1] - hemY);
+  if (spec.type === "pants") {
+    const highCut = spec.cut?.bottomY !== undefined;
+    work = clip(work, (v) => work.pos[v * 3 + 1] - hemY - (highCut ? Math.max(0, Math.abs(work.pos[v * 3]) - 0.035) * 0.9 : 0));
+  }
   // skirts: nothing from the legs below the crotch belongs to the upper piece
   if (spec.type === "skirt") work = clip(work, (v) => (frac(work.skin[v], legBone) > 0.6 ? work.pos[v * 3 + 1] - crotchY : 1));
 
@@ -292,7 +336,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const ACX = axisRing.cx, ACZ = axisRing.cz;
   // radius grid for the torso part (angles x levels, top -> bottom), with gravity hang below the bust
   const levelStep = 0.005;
-  const gridTop = isBottom ? waistline + 0.01 : bustY + 0.05;
+  const gridTop = isBottom ? waistline + 0.01 : neckY + 0.04;
   const gridBottom = needsCone ? hemY - 0.01 : upperBottom - 0.01;
   const levels = Math.max(1, Math.ceil((gridTop - gridBottom) / levelStep));
   const grid: Float64Array[] = [];
@@ -379,17 +423,6 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
       x = ACX + (dx / r) * nr;
       z = ACZ + (dz / r) * nr;
       strainArr[v] = ring.P > 0 ? girthAt(p[1]) / ring.P : 1;
-    } else if (!isBottom && p[1] > bustY) {
-      // above the bust: keep the chest ease proportionally, fading out toward the shoulders
-      const ring = ringAt(p[1]);
-      const ease = Math.max(th, ((Gc - bustRing.P) / TAU) * Math.max(0, 1 - (p[1] - bustY) / 0.12));
-      if (ring.hull.length >= 6) {
-        const dx = x - ring.cx, dz = z - ring.cz, r = Math.hypot(dx, dz) || 1e-6;
-        const rh = rayHull(ring.hull, ring.cx, ring.cz, dx / r, dz / r);
-        const nr = Math.max(r, rh + ease * 0.8);
-        x = ring.cx + (dx / r) * nr; z = ring.cz + (dz / r) * nr;
-      }
-      strainArr[v] = Gc / Math.max(0.3, bustRing.P);
     }
     work.pos[v * 3] = x; work.pos[v * 3 + 1] = y; work.pos[v * 3 + 2] = z;
   }
