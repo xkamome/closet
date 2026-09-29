@@ -764,7 +764,8 @@ function loopDir(loop: number[][], e1: Vector3, e2: Vector3, c: Vector3): number
 function buildSkirt(spec: GarmentSpec, fr: BodyFrame, opts: BuildOpts = {}): LookGarment {
   const m = fr.m, h = m.height / 160, Y = fr.y, fab = spec.fabric;
   const gap = Math.max(0.003, fab.thickness * 2 + 0.002);
-  const alpha = clamp(0.3 + (1 - fab.drape) * 0.6, 0.25, 0.85);
+  // skirts: most of the extra fabric falls into folds; only stiff fabric stands away from the body
+  const alpha = clamp(0.12 + (1 - fab.drape) * 0.35, 0.1, 0.45);
   const rise = riseOffset(spec.type, spec.rise);
   const yTop = Y.waist + rise * h;
   const yHem = Math.max(0.05, yTop - cm(spec.m.length, 58 * h));
@@ -775,7 +776,8 @@ function buildSkirt(spec: GarmentSpec, fr: BodyFrame, opts: BuildOpts = {}): Loo
   smoothRows(rows, 4);
   const table = new RowTable(rows);
   const hemC = sectionPerimeter(table.at(yHem).sec) + table.at(yHem).hidden;
-  const lam = lerp(0.12, 0.22, 1 - fab.drape);
+  // fold spacing: drapey fabric (chiffon) falls in many narrow folds; knife pleats every ~4.5 cm
+  const lam = spec.pleated ? 0.045 : lerp(0.07, 0.22, 1 - fab.drape);
   const kHalf = Math.max(2, Math.round(hemC / lam / 2));
   const pieces: Piece[] = [];
   for (const back of [false, true]) {
@@ -789,7 +791,7 @@ function buildSkirt(spec: GarmentSpec, fr: BodyFrame, opts: BuildOpts = {}): Loo
     const zAt = (x: number, y: number) => table.frontZ(x, y, back);
     for (let i = 0; i < cols * rowsN; i++) { p.pos[i * 3] = xy[i * 2]; p.pos[i * 3 + 1] = xy[i * 2 + 1]; p.pos[i * 3 + 2] = zAt(xy[i * 2], xy[i * 2 + 1]); }
     evenRows(p.pos, cols, rowsN, zAt);
-    applyFlutes(p, table, kHalf, back, zAt, back ? 5.1 : 2.3);
+    applyFlutes(p, table, kHalf, back, zAt, back ? 5.1 : 2.3, spec.pleated ? yTop - 0.06 : null);
     pushOut(p, fr, gap);
     pieces.push(p);
   }
@@ -803,16 +805,26 @@ function buildSkirt(spec: GarmentSpec, fr: BodyFrame, opts: BuildOpts = {}): Loo
   return { spec, pieces, outer, marks: { WAIST_L: [table.extent(yTop)[1], yTop], WAIST_R: [table.extent(yTop)[0], yTop], HEM_L: [table.extent(yHem)[1], yHem], HEM_R: [table.extent(yHem)[0], yHem] } };
 }
 
-function applyFlutes(p: Piece, table: RowTable, kHalf: number, back: boolean, zAt: (x: number, y: number) => number, seed: number): void {
+/** pleatFrom: knife pleats below this height (stitched flat above), instead of soft flutes */
+function applyFlutes(p: Piece, table: RowTable, kHalf: number, back: boolean, zAt: (x: number, y: number) => number, seed: number, pleatFrom: number | null = null): void {
   const { cols, rows } = p;
   for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
     const o = j * cols + i;
     const x = p.pos[o * 3], y = p.pos[o * 3 + 1];
     const r = table.at(y);
     const C = sectionPerimeter(r.sec);
-    const A = Math.min(0.05, Math.sqrt(Math.max(0, r.hidden) * C) / (Math.PI * kHalf * 2));
     const u = i / (cols - 1);
-    const d = A * flute(u, kHalf, seed) * smooth(Math.min(u, 1 - u) / 0.03);
+    let d: number;
+    if (pleatFrom !== null) {
+      // even, sharp pleats: a sawtooth across the panel, opening up below the stitching
+      const open = smooth((pleatFrom - y) / 0.1);
+      const A = Math.min(0.018, 0.008 + Math.sqrt(Math.max(0, r.hidden) * C) / (Math.PI * kHalf * 4)) * open;
+      const w = u * kHalf * 2;
+      d = A * (Math.abs(((w % 2) + 2) % 2 - 1) * 2 - 1) * smooth(Math.min(u, 1 - u) / 0.02);
+    } else {
+      const A = Math.min(0.05, Math.sqrt(Math.max(0, r.hidden) * C) / (Math.PI * kHalf * 2));
+      d = A * flute(u, kHalf, seed) * smooth(Math.min(u, 1 - u) / 0.03);
+    }
     const dz = 0.001;
     let nx = -(zAt(x + dz, y) - zAt(x - dz, y)) / (2 * dz), nz = 1;
     if (back) { nx = -nx; nz = -1; }

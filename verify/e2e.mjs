@@ -243,7 +243,7 @@ try {
   });
 
   await check("tuck in: a top goes inside the trousers and comes out again", async () => {
-    await page.click("#wardrobe-list li:has-text('UNIQLO 圓領 T 恤') button:has-text('穿上')");
+    await page.click("#wardrobe-list li:has-text('U牌 圓領 T 恤') button:has-text('穿上')");
     await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.worn.some((w) => w.uniqlo), null, { timeout: 60000 });
     await page.click("#wardrobe-list li:has-text('直筒牛仔褲') button:has-text('穿上')");
     await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.worn.some((w) => w.spec.type === "pants"), null, { timeout: 60000 });

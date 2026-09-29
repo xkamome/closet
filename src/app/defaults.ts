@@ -6,6 +6,7 @@ import type { GarmentType, StyleChoice } from "../garment/spec";
 import { makeSample, type SampleId } from "../look/sampleGen";
 import { drawDesign, type Design } from "../look/designer";
 import { wardrobe, type SavedGarment } from "./wardrobe";
+import { packGenerated, type GenItem } from "./generate";
 
 export type Preset = StyleChoice & { type: GarmentType };
 
@@ -45,7 +46,15 @@ export async function packPreset(id: string, name: string, image: HTMLCanvasElem
 
 /** Add the starter set once (first visit, or when asked again). Existing items are kept. */
 /** bump when DEFAULT_ITEMS change: stored copies are refreshed, new items added */
-const DEFAULTS_VERSION = "2";
+const DEFAULTS_VERSION = "3";
+
+/** long skirts drawn by the designer, worn like generated items (sizes from the U牌 chiffon skirt) */
+const LONG_SKIRTS: { id: string; item: GenItem }[] = [
+  { id: "default-chiffon-maxi", item: { name: "雪紡長裙", type: "skirt", sleeve: "none", neckline: "crew", silhouette: "aline", length: 1.55,
+    colors: ["#c9a3a0"], pattern: "solid", fabric: "聚酯纖維100% 雪紡 梭織", seed: 5 } },
+  { id: "default-pleated-maxi", item: { name: "百褶長裙", type: "skirt", sleeve: "none", neckline: "crew", silhouette: "aline", length: 1.5,
+    colors: ["#9aa58c"], pattern: "solid", fabric: "聚酯纖維100% 雪紡 梭織", pleated: true, seed: 9 } },
+];
 
 export async function seedDefaults(force = false): Promise<number> {
   const KEY = "closet2.defaultsSeeded";
@@ -63,6 +72,13 @@ export async function seedDefaults(force = false): Promise<number> {
     const add = have.has(it.id) ? upgrade || force : !stored || force || (upgrade && it.since === DEFAULTS_VERSION);
     if (!add) continue;
     await wardrobe.put(await packPreset(it.id, it.name, it.sample ? makeSample(it.sample) : drawDesign(it.design!), it.preset, it.fabricText, base + (DEFAULT_ITEMS.length - i) * 1000));
+    n++;
+  }
+  for (const [i, ls] of LONG_SKIRTS.entries()) {
+    const add = have.has(ls.id) ? upgrade || force : !stored || force || upgrade;
+    if (!add) continue;
+    const g = await packGenerated(ls.item, base - (i + 1) * 1000);
+    await wardrobe.put({ ...g, id: ls.id, name: ls.item.name });
     n++;
   }
   try { localStorage.setItem(KEY, DEFAULTS_VERSION); } catch { /* ignore */ }

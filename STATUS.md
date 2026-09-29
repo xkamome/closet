@@ -9,6 +9,11 @@
 > - Next: the single next step
 > - (optional) BLOCKER: exact error + what was tried
 
+## [2026-09-29 21:30] U牌 rename, web build, long skirts, pleats, GitHub
+- Done: UI says「U牌」instead of UNIQLO (stored wardrobe names migrated, catalogue v3); `npm run build:web` (mode web: AI features removed) + tools/check-web.mjs; skirts/dresses hang with folds instead of ballooning (drapedSpec soft saturation keeps every size step visible), chiffon falls in narrow folds, knife pleats (spec.pleated) in 3D + 寫真 + drawings; new default 雪紡長裙 / 百褶長裙 (sized like the U牌 chiffon skirt)
+- Verified: verify.mjs all pass; web build checked under /closet/
+- Next: publish to GitHub (xkamome/closet, public, Pages from gh-pages); fitted Mini T shoulder gaps in 寫真; 3D chiffon hip line
+
 ## [2026-09-29 19:30] Wardrobe, UNIQLO standard sizes, tuck-in, saved avatars, bust, prompt -> wardrobe
 - Done:
   - Default wardrobe (src/app/defaults.ts, versioned seeding) + UNIQLO standard set (src/app/uniqlo.ts, 22 plain basics: innerwear / tops / dresses / long skirts / sports; Japan site = Taiwan sizing, 5 US-only items flagged "美版"; garment charts + UNIQLO body-size ranges; recommendation by body range, src/app/uniqloWear.ts), size + colour selects in the worn list, 7 one-click outfits (瑜伽 / 跑步 / 健身 / 休閒運動 / 喇叭褲運動 / 長裙日常 / 層次長裙)

@@ -603,11 +603,16 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
       const { ring } = sampleGrid(y, 0);
       const excess = Math.max(0, girthAt(y) / Math.max(0.2, ring.P) - 1);
       // folds grow with excess fabric and drape, fading in from the top edge
-      const foldAmp = Math.min(0.07, excess * 0.1 * (0.4 + drape)) * Math.min(1, (top - y) / 0.12);
+      const foldAmp = spec.pleated
+        // knife pleats: even depth, stitched flat over the hips
+        ? Math.min(0.035, 0.012 + excess * 0.03) * Math.min(1, Math.max(0, (top - y - 0.06) / 0.1))
+        : Math.min(0.07, excess * 0.1 * (0.4 + drape)) * Math.min(1, (top - y) / 0.12);
       for (let b = 0; b < N; b++) {
         const a = (b / N) * TAU;
         const R = sampleGrid(y, a).r;
-        const r = R * (1 + foldAmp * Math.sin(a * 9 + phase + tk * 0.8) * (0.6 + 0.4 * Math.sin(a * 4)));
+        // 18 sharp pleats (4 samples each) or 9 soft, uneven lobes
+        const wave = spec.pleated ? (2 / Math.PI) * Math.asin(Math.sin(a * 18)) : Math.sin(a * 9 + phase + tk * 0.8) * (0.6 + 0.4 * Math.sin(a * 4));
+        const r = R * (1 + foldAmp * wave);
         const x = ACX + Math.sin(a) * r, z = ACZ + Math.cos(a) * r;
         work.pos.push(x, y, z);
         work.nor.push(Math.sin(a), 0, Math.cos(a));

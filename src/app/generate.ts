@@ -21,7 +21,7 @@ const PATTERNS: Pattern[] = ["solid", "stripe", "pinstripe", "plaid", "gingham",
 export function buildGenPrompt(text: string, count: number): string {
   return `你是服裝設計助理。依照使用者的描述，設計 ${count} 件女裝單品${count > 1 ? "，彼此要好搭配" : ""}。
 只輸出 JSON 陣列，不要任何其他文字。每件的格式：
-{"name":"繁體中文品名（10 字內）","type":"top|dress|skirt|pants","sleeve":"none|short|elbow|long","neckline":"crew|v|scoop|boat","silhouette":"fitted|straight|aline|oversized","length":數字,"colors":["#底色","#花紋色1","#花紋色2"],"pattern":"${PATTERNS.join("|")}","text":"只有 pattern 為 text 時的印字（英文，14 字內）","fabric":"材質，例如 棉95% 彈性纖維5% 針織"}
+{"name":"繁體中文品名（10 字內）","type":"top|dress|skirt|pants","sleeve":"none|short|elbow|long","neckline":"crew|v|scoop|boat","silhouette":"fitted|straight|aline|oversized","length":數字,"colors":["#底色","#花紋色1","#花紋色2"],"pattern":"${PATTERNS.join("|")}","text":"只有 pattern 為 text 時的印字（英文，14 字內）","fabric":"材質，例如 棉95% 彈性纖維5% 針織","pleated":是否百褶(true/false)}
 length：1 是該類型的一般長度；0.7 是短版，1.3 是長版，長裙或長洋裝用 1.5。
 裙子和褲子的 sleeve 用 none、neckline 用 crew。
 使用者的描述：${text}`;
@@ -55,6 +55,7 @@ function normalize(o: any, i: number): GenItem {
     text: typeof o?.text === "string" ? o.text.slice(0, 14) : undefined,
     fabric: typeof o?.fabric === "string" && o.fabric.trim() ? o.fabric.slice(0, 40) : "棉100%",
     straps: false,
+    pleated: o?.pleated === true && (type === "skirt" || type === "dress"),
     seed: 17 + i * 31,
   };
 }
@@ -88,10 +89,11 @@ export function readKeywords(text: string, i = 0): GenItem {
   if (pattern === "denim" && !colors.length) colors.push("#3d5a80");
   if (!colors.length) colors.push(["#f4f2ee", "#1f1f22", "#8a95a8", "#d8c3a3"][i % 4]);
   if (pattern !== "solid" && pattern !== "denim" && pattern !== "rib" && pattern !== "knit" && colors.length < 2) colors.push(colors[0] === "#f4f2ee" ? "#232f4b" : "#f4f2ee");
+  const pleated = /百褶|褶裙|pleat/i.test(t);
   const fabric = pattern === "denim" ? "棉98% 彈性纖維2% 牛仔布" : /雪紡/.test(t) ? "聚酯纖維100% 雪紡 梭織" : /麻/.test(t) ? "棉70% 麻30% 梭織"
     : /針織|羅紋|t恤|t 恤|背心/i.test(t) || type === "top" ? "棉100% 針織" : "棉100% 梭織";
   const name = t.replace(/\s+/g, "").slice(0, 12) || "新衣服";
-  return { name, type, sleeve: type === "skirt" || type === "pants" ? "none" : sleeve, neckline, silhouette, length, colors, pattern, fabric, seed: 17 + i * 31 };
+  return { name, type, sleeve: type === "skirt" || type === "pants" ? "none" : sleeve, neckline, silhouette, length, colors, pattern, fabric, pleated, seed: 17 + i * 31 };
 }
 
 /** Split "白T、黑色寬褲、碎花長裙" into single garments; one description -> one item. */
@@ -102,10 +104,10 @@ export function readKeywordList(text: string): GenItem[] {
 
 // ------------------------------------------------------------------ sizing from the closest UNIQLO basic
 /** The UNIQLO basic whose size chart a generated garment borrows. */
-export function uniqloBase(d: Pick<Design, "type" | "sleeve" | "silhouette">): string {
+export function uniqloBase(d: Pick<Design, "type" | "sleeve" | "silhouette" | "pleated">): string {
   switch (d.type) {
     case "dress": return d.silhouette === "fitted" ? "E488722-000" : d.silhouette === "straight" ? "E488186-000" : "E482982-000";
-    case "skirt": return d.silhouette === "fitted" || d.silhouette === "straight" ? "E487997-000" : "E482286-000";
+    case "skirt": return d.pleated ? "E487996-000" : d.silhouette === "fitted" || d.silhouette === "straight" ? "E487997-000" : "E482286-000";
     case "pants": return d.silhouette === "fitted" ? "E483546-000" : d.silhouette === "aline" ? "E483296-000" : "E483282-000";
     default:
       if (d.sleeve === "none") return d.silhouette === "fitted" ? "E482195-000" : "E473980-000";
@@ -118,7 +120,7 @@ export function uniqloBase(d: Pick<Design, "type" | "sleeve" | "silhouette">): s
 export function wearGenerated(d: Design & { fabric?: string }, base: string, meas: Measurements, size?: string): UniqloWear & { spec: GarmentSpec } {
   const u = uniqloItem(base)!;
   const r = wearUniqlo(u, 0, meas, size);
-  const cut = specFor(d.type, { sleeve: d.sleeve, neckline: d.neckline, silhouette: d.silhouette, rise: "natural", color: d.colors[0] }, meas);
+  const cut = specFor(d.type, { sleeve: d.sleeve, neckline: d.neckline, silhouette: d.silhouette, rise: "natural", color: d.colors[0], pleated: d.pleated }, meas);
   const girths = ["chest", "waist", "hip", "hem", "shoulder", "thigh", "legOpening", "upperArm"] as const;
   const m = { ...cut.m };
   for (const k of girths) if (r.spec.m[k] !== undefined && u.type === d.type) m[k] = r.spec.m[k];

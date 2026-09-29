@@ -20,6 +20,8 @@ export interface Design {
   text?: string;
   /** camisole-like thin straps for sleeveless tops / dresses */
   straps?: boolean;
+  /** knife pleats (skirts / dresses) */
+  pleated?: boolean;
   seed?: number;
 }
 
@@ -166,6 +168,16 @@ export function drawDesign(d: Design): HTMLCanvasElement {
     const gr = ctx.createLinearGradient(x - 60, 0, x + 60, 0);
     gr.addColorStop(0, "rgba(0,0,0,0)"); gr.addColorStop(0.5, i % 2 ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.06)"); gr.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = gr; ctx.fillRect(x - 60, 0, 120, H);
+  }
+  if (d.pleated) {
+    // pleat lines fanning out from the waistband
+    const top = d.type === "skirt" ? 170 : 420;
+    for (let k = -14; k <= 14; k++) {
+      const gr = ctx.createLinearGradient(0, top, 0, H);
+      gr.addColorStop(0, "rgba(0,0,0,0)"); gr.addColorStop(0.15, "rgba(0,0,0,0.12)"); gr.addColorStop(1, "rgba(0,0,0,0.16)");
+      ctx.strokeStyle = gr; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(W / 2 + k * 11, top); ctx.lineTo(W / 2 + k * 24, H); ctx.stroke();
+    }
   }
   ctx.lineWidth = 10; ctx.strokeStyle = "rgba(0,0,0,0.05)"; ctx.stroke(path);
   ctx.lineWidth = 2; ctx.setLineDash([6, 5]); ctx.strokeStyle = "rgba(0,0,0,0.18)";

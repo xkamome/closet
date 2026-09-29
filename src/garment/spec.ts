@@ -41,6 +41,8 @@ export interface GarmentSpec {
   color?: string;
   /** tops: tucked into the skirt / trousers worn with it */
   tucked?: boolean;
+  /** skirts / dresses: knife pleats (narrow, regular folds stitched down to the hip) */
+  pleated?: boolean;
 }
 
 /** Underwear set (bra + briefs) so the mannequin is dressed for fitting. */
@@ -92,7 +94,7 @@ export function defaultSpec(type: GarmentType, body: { bust: number; waist: numb
   return base;
 }
 
-export interface StyleChoice { sleeve: Sleeve; neckline: Neckline; silhouette: Silhouette; rise: Rise; color?: string }
+export interface StyleChoice { sleeve: Sleeve; neckline: Neckline; silhouette: Silhouette; rise: Rise; color?: string; pleated?: boolean }
 
 /** A garment of `type` with the chosen cut, sized for the body (silhouette ease, sleeve length). */
 export function specFor(type: GarmentType, c: StyleChoice, body: Parameters<typeof defaultSpec>[1] & { armLength: number }): GarmentSpec {
@@ -102,6 +104,7 @@ export function specFor(type: GarmentType, c: StyleChoice, body: Parameters<type
   spec.neckline = c.neckline;
   spec.rise = c.rise;
   if (c.color) spec.color = c.color;
+  if (c.pleated && (type === "skirt" || type === "dress")) spec.pleated = true;
   if (spec.silhouette === "oversized" && spec.m.chest) { spec.m.chest += 16; spec.m.shoulder = (spec.m.shoulder ?? body.shoulder) + 6; }
   if (spec.silhouette === "fitted" && spec.m.chest) { spec.m.chest = body.bust + 4; spec.m.waist = body.waist + 5; }
   if (spec.silhouette === "aline" && spec.m.hem) spec.m.hem = Math.max(spec.m.hem, (spec.m.hip ?? body.hips) * 1.45);
@@ -124,5 +127,22 @@ export function tuckedSpec(top: GarmentSpec, bottom: GarmentSpec, body: { neckY:
   t.m.waist = Math.min(t.m.waist ?? t.m.chest ?? inside, inside);
   t.m.hem = t.m.waist;
   delete t.m.hip;
+  return t;
+}
+
+/**
+ * The shape a garment hangs in. Size charts give the fabric width (a gathered maxi skirt can measure
+ * 150 cm at the hip), but soft fabric falls in folds instead of standing out: the outline only widens
+ * a little at the hip and grows toward the hem. Fit judgement keeps using the chart numbers.
+ */
+export function drapedSpec(spec: GarmentSpec, body: { hips: number; waist: number }): GarmentSpec {
+  if (spec.type !== "skirt" && spec.type !== "dress") return spec;
+  const t = structuredClone(spec);
+  // soft saturation: the first centimetres of ease show fully, more fabric shows less and less, but a
+  // bigger size always looks a little fuller and a smaller one tighter
+  const soften = (v: number, base: number, room: number) => (v <= base ? v : base + room * Math.tanh((v - base) / room));
+  if (t.m.hip) t.m.hip = soften(t.m.hip, body.hips, body.hips * 0.12 + 4);
+  const hemRoom = body.hips * (t.silhouette === "aline" ? 0.75 : 0.35) * (t.pleated ? 0.8 : 1);
+  if (t.m.hem) t.m.hem = soften(t.m.hem, Math.max(body.hips, t.m.hip ?? 0), hemRoom);
   return t;
 }

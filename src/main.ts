@@ -13,7 +13,7 @@ import { buildGarment } from "./garment/build";
 import { buildAtlas, cutoutGarment, cutoutFromMask, guessGarment, loadImage, looksLikePerson, toCanvas, type AvatarMarks, type Cutout } from "./garment/photo";
 import { analyzePersonGarments, marksFromLandmarks, type PersonGarment } from "./garment/personPhoto";
 import { segmentPerson, preloadSegmenter } from "./photo/segmenter";
-import { defaultSpec, riseOffset, specFor, tuckedSpec, underwearSpecs, TYPE_LABELS, SLEEVE_LABELS, SILHOUETTE_LABELS, type GarmentSpec, type GarmentType } from "./garment/spec";
+import { defaultSpec, drapedSpec, riseOffset, specFor, tuckedSpec, underwearSpecs, TYPE_LABELS, SLEEVE_LABELS, SILHOUETTE_LABELS, type GarmentSpec, type GarmentType } from "./garment/spec";
 import { parseSizeChart, GARMENT_KEY_LABELS, type ParsedChart, type GarmentKey } from "./fit/sizeChart";
 import { parseFabric, stretchLabel, DEFAULT_FABRIC, type Fabric } from "./fit/fabric";
 import { evaluateFit, recommendSize, type FitResult } from "./fit/fit";
@@ -81,6 +81,8 @@ interface Worn {
 let nextId = 1;
 
 async function main() {
+  // web build (npm run build:web): no local AI bridge, so the AI features are left out
+  if (import.meta.env.MODE === "web") document.querySelectorAll<HTMLElement>(".ai-only").forEach((e) => e.remove());
   const stage = new Stage($("viewport"));
   const data = await loadAvatar();
   $("loading").hidden = true;
@@ -242,7 +244,7 @@ async function main() {
     return tucked ? 2 : 1;
   };
   /** the spec actually built (a tucked top is shortened to end inside the waistband) */
-  const effectiveSpec = (w: Worn): GarmentSpec => (isTucked(w) ? tuckedSpec(w.spec, bottomOf()!.spec, meas) : w.spec);
+  const effectiveSpec = (w: Worn): GarmentSpec => drapedSpec(isTucked(w) ? tuckedSpec(w.spec, bottomOf()!.spec, meas) : w.spec, meas);
   // avatar landmarks (rest coordinates) for warping photos of people onto garments
   const avatarMarks = (): AvatarMarks => {
     const j = (n: string) => body.joint(n);
@@ -451,7 +453,7 @@ async function main() {
       else { thumb.className = "swatch"; thumb.style.background = w.spec.color ?? "#999"; }
       li.appendChild(thumb);
       const label = document.createElement("span");
-      label.textContent = w.uniqlo ? `UNIQLO ${uniqloItem(w.uniqlo.id)?.name ?? ""}・${sizeNote(uniqloItem(w.uniqlo.id)!, w.spec.size ?? "", w.uniqlo.recommended)}`
+      label.textContent = w.uniqlo ? `U牌 ${uniqloItem(w.uniqlo.id)?.name ?? ""}・${sizeNote(uniqloItem(w.uniqlo.id)!, w.spec.size ?? "", w.uniqlo.recommended)}`
         : w.generated ? `${w.generated.design.name}・${sizeNote(uniqloItem(w.generated.base)!, w.spec.size ?? "", w.generated.recommended)}`
         : `${SILHOUETTE_LABELS[w.spec.silhouette]}${TYPE_LABELS[w.spec.type]}${w.spec.size ? `（${w.spec.size}）` : ""}・${w.spec.fabric.label}`;
       li.appendChild(label);
@@ -494,7 +496,7 @@ async function main() {
         const bu = uniqloItem(gen.base)!;
         const sizeSel = document.createElement("select");
         sizeSel.className = "uq-size";
-        sizeSel.title = "尺碼（依 UNIQLO 基本款，★ 是依你的身形推薦的）";
+        sizeSel.title = "尺碼（依 U牌基本款，★ 是依你的身形推薦的）";
         sizeSel.innerHTML = bu.sizes.map((z) => `<option value="${z.size}" ${z.size === w.spec.size ? "selected" : ""}>${z.size}${z.size === gen.recommended ? " ★" : ""}</option>`).join("");
         sizeSel.onchange = () => busy(() => {
           const r = wearGenerated(gen.design, gen.base, meas, sizeSel.value);
@@ -611,7 +613,7 @@ async function main() {
     chips.appendChild(b);
   }
 
-  $("gen-go").addEventListener("click", async () => {
+  $("gen-go")?.addEventListener("click", async () => {
     const text = $<HTMLTextAreaElement>("gen-text").value.trim();
     const count = Number($<HTMLSelectElement>("gen-count").value);
     const status = (t: string) => { $("gen-status").textContent = t; };
@@ -738,12 +740,12 @@ async function main() {
     const { shape, garment } = renderStyle();
     return buildAIPrompt(meas as any, shape, garment?.spec, garment?.fit, $<HTMLTextAreaElement>("ai-question").value);
   };
-  $("ai-copy").addEventListener("click", async () => {
+  $("ai-copy")?.addEventListener("click", async () => {
     const p = currentPrompt();
     try { await navigator.clipboard.writeText(p); $("ai-status").textContent = "已複製提示詞，可以貼到 claude.ai。"; }
     catch { $("ai-answer").textContent = p; $("ai-status").textContent = "無法存取剪貼簿，提示詞顯示在下方，請手動複製。"; }
   });
-  $("ai-ask").addEventListener("click", async () => {
+  $("ai-ask")?.addEventListener("click", async () => {
     const btn = $<HTMLButtonElement>("ai-ask");
     btn.disabled = true;
     $("ai-status").textContent = "AI 思考中（通常 10–60 秒）…";

@@ -13,7 +13,7 @@ await page.click('#tabs button[data-tab="wear"]');
 await page.waitForFunction(() => document.querySelectorAll("#wardrobe-list li").length >= 17, null, { timeout: 60000 });
 console.log("wardrobe:", (await page.$$eval("#wardrobe-list li span", (xs) => xs.map((x) => x.textContent))).join(" / "));
 const wearItem = async (name) => { await page.click(`#wardrobe-list li:has-text('${name}') button:has-text('穿上')`); await page.waitForTimeout(300); await idle(); };
-await wearItem("UNIQLO 圓領 T 恤");
+await wearItem("U牌 圓領 T 恤");
 await wearItem("直筒牛仔褲");
 const info = () => page.evaluate(() => window.__closet.worn.map((w) => `${w.spec.type}:${w.spec.size ?? "-"}${w.spec.tucked ? ":tucked" : ""}`).join(" "));
 console.log("worn:", await info(), "| label:", await page.textContent("#worn-list li:first-child span"));

@@ -23,7 +23,7 @@ export function uniqloPhoto(u: UniqloItem, colorIndex: number): HTMLCanvasElemen
     type: u.type, sleeve: u.sleeve, neckline: u.neckline, silhouette: u.silhouette,
     length,
     colors: [u.colors[colorIndex]?.hex ?? u.colors[0].hex], pattern: /羅紋/.test(u.name) ? "rib" : "solid",
-    straps: /細肩帶/.test(u.name),
+    straps: /細肩帶/.test(u.name), pleated: /百褶/.test(u.name),
   });
 }
 
@@ -75,7 +75,7 @@ export function wearUniqlo(u: UniqloItem, colorIndex: number, meas: Measurements
   const recSize = uniqloRecommend(u, meas) ?? recommendSize(chart.rows, meas, u.type, fabric, u.sleeve)!.best.size;
   const row = chart.rows.find((r) => r.size === size) ?? chart.rows.find((r) => r.size === recSize) ?? chart.rows[0];
   const color = u.colors[colorIndex] ?? u.colors[0];
-  const spec = specFor(u.type, { sleeve: u.sleeve, neckline: u.neckline, silhouette: u.silhouette, rise: "natural", color: color.hex }, meas);
+  const spec = specFor(u.type, { sleeve: u.sleeve, neckline: u.neckline, silhouette: u.silhouette, rise: "natural", color: color.hex, pleated: /百褶/.test(u.name) }, meas);
   // chart values win; anything the chart doesn't give keeps the cut's defaults for this body
   spec.m = { ...spec.m, ...row.values };
   if (u.type === "pants" && row.values.inseam !== undefined) {
@@ -95,8 +95,8 @@ export function wearUniqlo(u: UniqloItem, colorIndex: number, meas: Measurements
 const toBlob = (c: HTMLCanvasElement) => new Promise<Blob>((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("toBlob failed"))), "image/png"));
 
 /** Add every UNIQLO basic to the wardrobe once (kept if the user deletes some later). */
-/** bump when the catalogue changes: new items are added (deleted ones stay deleted) */
-const UNIQLO_VERSION = "2";
+/** bump when the catalogue changes: new items are added (deleted ones stay deleted); v3 renamed the items */
+const UNIQLO_VERSION = "3";
 /** items added in each catalogue version */
 const ADDED_IN: Record<string, string> = { skirts: "2", sports: "2" };
 
@@ -105,12 +105,17 @@ export async function seedUniqlo(force = false): Promise<number> {
   let stored: string | null = null;
   try { stored = localStorage.getItem(KEY); } catch { /* seed anyway */ }
   if (!force && stored === UNIQLO_VERSION) return 0;
-  const have = new Set((await wardrobe.list()).map((g) => g.id));
   const t0 = Date.now() - 100000;
   let n = 0;
+  const existing = new Map((await wardrobe.list()).map((g) => [g.id, g]));
   for (const [i, u] of UNIQLO.entries()) {
     const id = "uniqlo-" + u.id;
-    if (have.has(id)) continue;
+    const old = existing.get(id);
+    if (old) {
+      // stored before the rename: keep the item (and the user's colour), update its name
+      if (old.name !== "U牌 " + u.name) await wardrobe.put({ ...old, name: "U牌 " + u.name });
+      continue;
+    }
     const isNew = (ADDED_IN[u.group] ?? "1") > (stored ?? "0");
     if (!force && stored && !isNew) continue;
     const c = cutoutGarment(uniqloPhoto(u, 0));
@@ -119,7 +124,7 @@ export async function seedUniqlo(force = false): Promise<number> {
     const k = Math.min(96 / c.width, 96 / c.height);
     thumb.getContext("2d")!.drawImage(c.canvas, (96 - c.width * k) / 2, (96 - c.height * k) / 2, c.width * k, c.height * k);
     const g: SavedGarment = {
-      id, name: "UNIQLO " + u.name, createdAt: t0 - i * 1000, plainBack: false, fabricText: u.fabricText,
+      id, name: "U牌 " + u.name, createdAt: t0 - i * 1000, plainBack: false, fabricText: u.fabricText,
       spec: { type: u.type, sleeve: u.sleeve, neckline: u.neckline, silhouette: u.silhouette, rise: "natural", m: {}, fabric: parseFabric(u.fabricText) },
       thumb: await toBlob(thumb), color: c.color, uniqlo: { id: u.id, color: 0 },
     };

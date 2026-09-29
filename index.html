@@ -136,15 +136,15 @@
         </div>
         <h2>身上的衣服</h2>
         <ul id="worn-list" class="list"></ul>
-        <h2>一鍵穿搭 <small>UNIQLO 標準尺寸，依你的身形自動選尺碼</small></h2>
+        <h2>一鍵穿搭 <small>U牌標準尺寸，依你的身形自動選尺碼</small></h2>
         <div id="outfit-chips" class="chips"></div>
-        <h2>用文字生出衣櫃 <small>尺寸依最接近的 UNIQLO 基本款</small></h2>
-        <textarea id="gen-text" rows="2" placeholder="例：上班通勤的膠囊衣櫃，大地色系、好搭配；或：白色條紋長袖上衣、黑色寬褲、碎花長裙"></textarea>
-        <div class="row">
+        <h2 class="ai-only">用文字生出衣櫃 <small>尺寸依最接近的 U牌基本款</small></h2>
+        <textarea class="ai-only" id="gen-text" rows="2" placeholder="例：上班通勤的膠囊衣櫃，大地色系、好搭配；或：白色條紋長袖上衣、黑色寬褲、碎花長裙"></textarea>
+        <div class="row ai-only">
           <label>件數<select id="gen-count"><option>1</option><option selected>3</option><option>5</option><option>8</option></select></label>
           <button id="gen-go" class="primary">生成並放進衣櫃</button>
         </div>
-        <p class="hint" id="gen-status">用 AI 理解需要先執行 <code>npm run bridge</code>；沒有開時，會用關鍵字判斷（顏色、花紋、袖長、類型）。</p>
+        <p class="hint ai-only" id="gen-status">用 AI 理解需要先執行 <code>npm run bridge</code>；沒有開時，會用關鍵字判斷（顏色、花紋、袖長、類型）。</p>
         <h2>衣櫃 <small>收藏在這個瀏覽器裡，之後可以一鍵再穿</small></h2>
         <ul id="wardrobe-list" class="list"></ul>
         <div class="row"><button id="wardrobe-defaults">放回預設衣服</button></div>
@@ -171,14 +171,14 @@
       <!-- 穿搭 -->
       <div class="tab" id="tab-style" hidden>
         <div id="advice"></div>
-        <h2>AI 深度建議 <small>用本機 Claude Code 的訂閱登入</small></h2>
-        <textarea id="ai-question" rows="2" placeholder="想問的問題（選填），例如：這件裙子要配什麼鞋？"></textarea>
-        <div class="row">
+        <h2 class="ai-only">AI 深度建議 <small>用本機 Claude Code 的訂閱登入</small></h2>
+        <textarea class="ai-only" id="ai-question" rows="2" placeholder="想問的問題（選填），例如：這件裙子要配什麼鞋？"></textarea>
+        <div class="row ai-only">
           <button id="ai-ask" class="primary">問 AI</button>
           <button id="ai-copy">複製提示詞</button>
         </div>
-        <p class="hint" id="ai-status">需要先在終端機執行 <code>npm run bridge</code>。沒有啟動時可以按「複製提示詞」貼到 claude.ai。</p>
-        <div id="ai-answer"></div>
+        <p class="hint ai-only" id="ai-status">需要先在終端機執行 <code>npm run bridge</code>。沒有啟動時可以按「複製提示詞」貼到 claude.ai。</p>
+        <div class="ai-only" id="ai-answer"></div>
       </div>
     </aside>
   </div>
