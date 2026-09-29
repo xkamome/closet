@@ -370,6 +370,8 @@ function flute(u: number, k: number, seed: number): number {
 interface NeckShape { hw: number; df: number; db: number; shape: (r: number) => number }
 function neckShape(spec: GarmentSpec, frame: BodyFrame): NeckShape {
   const R = frame.neckR, h = frame.m.height / 160;
+  // camisole: a low, wide straight-ish neckline; the straps sit where it meets the shoulder
+  if (spec.straps && spec.sleeve === "none") return { hw: R + 0.05, df: 0.14 * h, db: 0.13 * h, shape: (r) => Math.sqrt(Math.max(0, 1 - Math.pow(r, 4))) };
   switch (spec.neckline) {
     case "v": return { hw: R + 0.026, df: 0.15 * h, db: 0.022, shape: (r) => 1 - Math.pow(r, 1.1) };
     case "scoop": return { hw: R + 0.045, df: 0.12 * h, db: 0.03, shape: (r) => Math.sqrt(Math.max(0, 1 - Math.pow(r, 3))) };
@@ -414,7 +416,10 @@ function buildTop(spec: GarmentSpec, fr: BodyFrame, opts: BuildOpts): LookGarmen
   const alpha = clamp(0.3 + (1 - fab.drape) * 0.6, 0.25, 0.85);
   const neck = neckShape(spec, fr);
   const sleeveless = spec.sleeve === "none";
-  const shoulderHalf = sleeveless ? Math.min(cm(spec.m.shoulder, m.shoulder) / 2, neck.hw + 0.065 * h) : cm(spec.m.shoulder, m.shoulder + 1) / 2;
+  // a dropped shoulder (seam out on the upper arm) is drawn with the seam at the shoulder tip: the
+  // extra width goes into the (wider) sleeve, which reads the same from the front
+  const shoulderHalf = sleeveless ? (spec.straps ? neck.hw + 0.012 : Math.min(cm(spec.m.shoulder, m.shoulder) / 2, neck.hw + 0.065 * h))
+    : Math.min(cm(spec.m.shoulder, m.shoulder + 1) / 2, m.shoulder / 200 + 0.015);
   const yHPS = fr.topY(neck.hw) + gap;
   const length = cm(spec.m.length, 60 * h);
   const yHem = Math.max(0.05, yHPS - length);
@@ -438,7 +443,14 @@ function buildTop(spec: GarmentSpec, fr: BodyFrame, opts: BuildOpts): LookGarmen
   const xA = Math.max(-first.xl, first.xr);
 
   const ySPofX = (x: number) => fr.topY(x) + gap;
-  const ySP = ySPofX(shoulderHalf);
+  // shoulder point: on top of the shoulder; a dropped shoulder (wider than the body's) sits lower,
+  // out on the upper arm, but always well above the armpit
+  const bodyHalf = m.shoulder / 200;
+  const drop = Math.max(0, shoulderHalf - bodyHalf);
+  const ySP = Math.max(
+    shoulderHalf <= bodyHalf ? ySPofX(shoulderHalf) : ySPofX(bodyHalf) - drop * 0.45,
+    yArm + 0.06,
+  );
   // armhole curve (front view): SP -> armpit, leaving SP downward, reaching the armpit horizontally
   const armholeX = (y: number) => {
     if (y <= yArm) return xA;
@@ -567,6 +579,32 @@ function buildTop(spec: GarmentSpec, fr: BodyFrame, opts: BuildOpts): LookGarmen
       smoothEdge(p, cols - 1, yArm, 4);
       pieces.push(p);
     }
+  }
+
+  // the armhole edge must not sit inside the upper arm (the collision map has no arms below the
+  // shoulder): push it out of the arm, smooth it, then build the sleeve on it
+  const gapA = Math.max(0.003, fab.thickness * 2 + 0.002);
+  for (const p of pieces) {
+    const side = p.name.endsWith("L") ? 1 : -1;
+    const av = side === 1 ? fr.armVerts.L : fr.armVerts.R;
+    const col = p.cols - 1, idx: number[] = [], pts: number[] = [];
+    for (let j = 0; j < p.rows; j++) {
+      const o = (j * p.cols + col) * 3;
+      if (p.pos[o + 1] > ySP + 0.01 || p.pos[o + 1] < yArm - 0.03) continue;
+      idx.push(o); pts.push(p.pos[o], p.pos[o + 1], p.pos[o + 2]);
+    }
+    if (!idx.length) continue;
+    const arr = Float32Array.from(pts);
+    collide(arr, idx.length, av.pos, av.normals, av.count, gapA, 0.05);
+    // move the neighbouring columns along so the panel doesn't fold at the edge
+    idx.forEach((o, k) => {
+      const dx = arr[k * 3] - p.pos[o], dz = arr[k * 3 + 2] - p.pos[o + 2];
+      for (let c = 0; c < 4; c++) {
+        const w = 1 - c / 4, oc = o - c * 3;
+        p.pos[oc] += dx * w; p.pos[oc + 2] += dz * w;
+      }
+    });
+    smoothEdge(p, col, yArm - 0.03, 3);
   }
 
   if (!sleeveless) {

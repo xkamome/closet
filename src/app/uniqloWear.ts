@@ -87,6 +87,7 @@ export function wearUniqlo(u: UniqloItem, colorIndex: number, meas: Measurements
     spec.m.hem = Math.max(spec.m.hem ?? 0, spec.m.hip * (/百褶/.test(u.name) ? 1.8 : 1.3));
   }
   spec.size = row.size;
+  if (/細肩帶/.test(u.name)) spec.straps = true;
   spec.fabric = fabric;
   const fit = evaluateFit(row, meas, u.type, fabric, u.sleeve);
   return { spec, cutout: null, chart, fit, recommended: recSize };

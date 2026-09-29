@@ -207,7 +207,18 @@ async function main() {
     (s as any).__cut = c;
     return s;
   };
-  const outfits: { id: string; label: string; specs: GarmentSpec[]; colors: string[] }[] = [
+  // ?uq=tops|dresses|skirts|sports : every U牌 item of a group in its recommended size (or &uqsize=)
+  const uqGroup = q.get("uq");
+  const uqOutfits: { id: string; label: string; specs: GarmentSpec[]; colors: string[] }[] = [];
+  if (uqGroup) {
+    const { UNIQLO } = await import("./app/uniqlo");
+    const { wearUniqlo } = await import("./app/uniqloWear");
+    for (const u of UNIQLO.filter((x) => x.group === uqGroup || (uqGroup === "tops" && x.group === "innerwear"))) {
+      const r = wearUniqlo(u, 0, m, q.get("uqsize") ?? undefined);
+      uqOutfits.push({ id: u.id, label: `${u.name} ${r.spec.size} 胸${Math.round(r.spec.m.chest ?? 0)} 肩${Math.round(r.spec.m.shoulder ?? 0)} 長${Math.round(r.spec.m.length ?? 0)}`, specs: [r.spec], colors: [r.spec.color!] });
+    }
+  }
+  const outfits: { id: string; label: string; specs: GarmentSpec[]; colors: string[] }[] = uqGroup ? uqOutfits : [
     ...(await (async () => {
       const { UNIQLO } = await import("./app/uniqlo");
       const { wearUniqlo } = await import("./app/uniqloWear");

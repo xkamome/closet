@@ -18,6 +18,10 @@ export interface GarmentMesh {
   rest: Float32Array;
   skinIdx: Uint16Array;
   skinW: Float32Array;
+  /** skirts: skin used when sitting (front goes with the thighs over the lap); standing uses skinW,
+   * where the skirt hangs from the hips and doesn't follow the legs (feet together, a step) */
+  skinSitIdx?: Uint16Array;
+  skinSitW?: Float32Array;
   uv: Float32Array;
   index: Uint32Array;
   /** garment girth / body girth near each vertex (for the tightness heat-map) */
@@ -551,6 +555,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   stage("before-cone");
   // ---------- cone piece (samples the same radius grid, so it joins the upper piece seamlessly)
   let coneFreeFrom = Infinity, coneBase = -1;
+  const sitSkin = new Map<number, Skin>();
   if (needsCone) {
     const N = 72; // 9 fold lobes x 8 samples
     const step = 0.015;
@@ -562,6 +567,8 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     coneFreeFrom = base + N * 3; // the top three rings stay attached to the hips
     const ys: number[] = [];
     for (let L = 0; L <= count; L++) ys.push(top - ((top - hemY) * L) / count);
+    const bone = (n: string) => ctx.body.boneIndex.get(n) ?? 0;
+    const boneId = { pelvisL: bone("pelvis.L"), pelvisR: bone("pelvis.R"), legL: bone("upperleg01.L"), legR: bone("upperleg01.R") };
     // nearest-body-vertex skinning (k nearest, inverse distance) using rest torso/leg vertices
     // candidate body vertices in a spatial hash (4 cm cells)
     const CELL = 0.04;
@@ -617,7 +624,25 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
         work.pos.push(x, y, z);
         work.nor.push(Math.sin(a), 0, Math.cos(a));
         // exact kNN skinning on every 3rd ring (and the last); rings in between are blended afterwards
-        if (L % 3 === 0 || L === count) {
+        // A skirt is one piece of cloth: attached to the hips, and to both thighs more and more toward
+        // the hem, blended smoothly around the ring (by side), so it never splits between the legs
+        // (feet together) or tears over the knees (sitting). Near the top it matches the body's own
+        // weights so it stays joined to the upper piece.
+        const side = Math.sin(a), mix = Math.max(0, Math.min(1, (side + 0.6) / 1.2));
+        const m2 = mix * mix * (3 - 2 * mix);
+        // the front of the skirt lies on the thighs (it goes over the lap when sitting), the back hangs
+        // from the hips
+        // front and sides go with the thighs (so the thighs never come through when they swing forward),
+        // the back hangs from the hips
+        const fs = Math.max(0, Math.min(1, (Math.cos(a) + 0.45) / 0.9));
+        const sitShare = (0.3 + 0.7 * fs * fs * (3 - 2 * fs)) * Math.min(1, tk * 3);
+        const standShare = 0.12 * Math.min(1, tk * 2);
+        const clothFor = (legShare: number) => top4(new Map([[boneId.pelvisL, (1 - legShare) * m2], [boneId.pelvisR, (1 - legShare) * (1 - m2)],
+          [boneId.legL, legShare * m2], [boneId.legR, legShare * (1 - m2)]]));
+        const cloth = clothFor(standShare);
+        sitSkin.set(work.skin.length, clothFor(sitShare));
+        const joinW = Math.min(1, (top - y) / 0.15);
+        if (joinW < 1) {
           const best = nearest6(x, y, z);
           const acc = new Map<number, number>();
           for (const [d2, i] of best) {
@@ -627,18 +652,14 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
               if (bw) acc.set(data.body.skinIdx[i * 4 + k], (acc.get(data.body.skinIdx[i * 4 + k]) ?? 0) + bw * w);
             }
           }
-          work.skin.push(top4(acc));
+          const jw = joinW * joinW * (3 - 2 * joinW);
+          sitSkin.set(work.skin.length, mergeSkin(top4(acc), sitSkin.get(work.skin.length)!, jw));
+          work.skin.push(mergeSkin(top4(acc), cloth, jw));
         } else {
-          work.skin.push({ i: [0, 0, 0, 0], w: [0, 0, 0, 0] }); // placeholder
+          work.skin.push(cloth);
         }
         strainArr.push(girthAt(y) / Math.max(0.2, ring.P));
       }
-    }
-    for (let L = 1; L < count; L++) {
-      if (L % 3 === 0) continue;
-      const L0 = L - (L % 3), L1 = Math.min(count, L0 + 3);
-      const t = (L - L0) / Math.max(1, L1 - L0);
-      for (let b = 0; b < N; b++) work.skin[base + L * N + b] = mergeSkin(work.skin[base + L0 * N + b], work.skin[base + L1 * N + b], t);
     }
     for (let L = 0; L < count; L++) {
       for (let b = 0; b < N; b++) {
@@ -879,6 +900,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const isPinned = (v: number) =>
     (v < pinned.length && pinned[v] === 1) || extraPinnedSet.has(v) || (coneBase >= 0 && v >= coneBase && v < coneFreeFrom);
   const outSkI: number[] = [], outSkW: number[] = [], outFree: number[] = [], outWeld: number[] = [];
+  const outSitI: number[] = [], outSitW: number[] = [];
   const vmap = new Map<number, number>();
   const W = Math.max(1e-3, Math.max(bx1 - cx, cx - bx0));
   const H = Math.max(1e-3, by1 - by0);
@@ -898,6 +920,9 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     outWeld.push(v);
     outSkI.push(...work.skin[v].i);
     outSkW.push(...work.skin[v].w);
+    const ss = sitSkin.get(v) ?? work.skin[v];
+    outSitI.push(...ss.i);
+    outSitW.push(...ss.w);
     return id;
   };
   for (let t = 0; t < work.tris.length; t += 3) {
@@ -915,6 +940,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     rest: Float32Array.from(outPos),
     skinIdx: Uint16Array.from(outSkI),
     skinW: Float32Array.from(outSkW),
+    ...(sitSkin.size ? { skinSitIdx: Uint16Array.from(outSitI), skinSitW: Float32Array.from(outSitW) } : {}),
     uv: Float32Array.from(outUV),
     index: Uint32Array.from(outIdx),
     strain: Float32Array.from(outStrain),

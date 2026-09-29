@@ -210,6 +210,8 @@ async function main() {
     const target = buildPose(body, p === "half" ? "stand" : p, stance);
     body.setPose(currentPose);
     poseAnim = { from: currentPose, to: target, t: 0 };
+    // skirts switch to their seated skinning for the whole move (no jump at the end)
+    for (const w of [...underwear, ...worn]) if (w.view) w.view.sitting = p === "sit";
     if (p === "half") stage.setFraming("half");
     refreshLook();
   };
@@ -285,6 +287,7 @@ async function main() {
     const atlas = buildAtlas(w.cutout, { bbox: gm.bbox, torsoHalfWidth: gm.torsoHalfWidth, plainBack: w.plainBack, avatarMarks: avatarMarks() }, w.spec.color ?? "#7a93b8");
     const t3 = performance.now();
     w.view = new GarmentView(avatar, w.spec, gm, atlas);
+    w.view.sitting = poseName === "sit";
     w.view.under = underOf(w).map((o) => o.view!);
     const t4 = performance.now();
     w.view.update(!w.underwear, seatInfo);

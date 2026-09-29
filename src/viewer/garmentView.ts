@@ -68,14 +68,21 @@ export class GarmentView {
   }
 
   /** Re-skin after pose changes; `simulate` lets free-hanging cloth settle (used once a pose is reached). */
+  /** true while the avatar sits (set by the app; the pose blend also passes through it) */
+  sitting = false;
   update(simulate = false, seat: { x: number; z: number; r: number; y: number } | null = null): void {
+    if (simulate) this.sitting = !!seat;
     const body = this.avatar.body;
     const d = this.data;
-    body.skinRaw(d.rest, d.skinIdx, d.skinW, d.vertexCount, this.posed);
+    // skirts sit with their front over the lap: a separate skinning when seated
+    const sitting = this.sitting;
+    body.skinRaw(d.rest, sitting && d.skinSitIdx ? d.skinSitIdx : d.skinIdx, sitting && d.skinSitW ? d.skinSitW : d.skinW, d.vertexCount, this.posed);
     const gap = Math.max(0.003, this.spec.fabric.thickness * 1.5);
     collide(this.posed, d.vertexCount, this.avatar.posedBodyPositions, this.avatar.posedBodyNormals, body.data.bodyVertexCount, gap);
     for (const u of this.under) collide(this.posed, d.vertexCount, u.posedPositions, u.posedNormals, u.data.vertexCount, 0.006, 0.02);
-    if (simulate && d.free.some((f) => f)) {
+    // skirts / dresses (cone with its own cloth skinning) hang well as skinned; the relaxation pushed
+    // the free part out into a ledge at the hip and, seated, pulled it through the thighs
+    if (simulate && d.free.some((f) => f) && !(globalThis as any).__noDrape && !d.skinSitW) {
       const t0 = performance.now();
       drapeCloth({
         pos: this.posed, rest: d.rest, index: d.index, free: d.free, weld: d.weld,
@@ -91,11 +98,35 @@ export class GarmentView {
     }
     const g = this.mesh.geometry;
     (g.attributes.position.array as Float32Array).set(this.posed);
-    computeNormals(this.posed, d.index, d.vertexCount, g.attributes.normal.array as Float32Array);
+    const nor = computeNormals(this.posed, d.index, d.vertexCount, g.attributes.normal.array as Float32Array);
+    this.smoothSeams(nor);
     this.posedNormals = g.attributes.normal.array as Float32Array;
     g.attributes.position.needsUpdate = true;
     g.attributes.normal.needsUpdate = true;
     g.computeBoundingSphere();
+  }
+
+  private seamGroups: Int32Array[] | null = null;
+  /**
+   * Pieces that meet edge to edge (a skirt cone under the hip piece, UV seams) have separate vertices
+   * at the same place: share their normals so the join doesn't show as a line.
+   */
+  private smoothSeams(nor: Float32Array): void {
+    if (!this.seamGroups) {
+      const r = this.data.rest, n = this.data.vertexCount, map = new Map<string, number[]>();
+      for (let i = 0; i < n; i++) {
+        const k = `${Math.round(r[i * 3] / 0.002)},${Math.round(r[i * 3 + 1] / 0.002)},${Math.round(r[i * 3 + 2] / 0.002)}`;
+        const l = map.get(k);
+        if (l) l.push(i); else map.set(k, [i]);
+      }
+      this.seamGroups = [...map.values()].filter((l) => l.length > 1).map((l) => Int32Array.from(l));
+    }
+    for (const gr of this.seamGroups) {
+      let x = 0, y = 0, z = 0;
+      for (const i of gr) { x += nor[i * 3]; y += nor[i * 3 + 1]; z += nor[i * 3 + 2]; }
+      const l = Math.hypot(x, y, z) || 1;
+      for (const i of gr) { nor[i * 3] = x / l; nor[i * 3 + 1] = y / l; nor[i * 3 + 2] = z / l; }
+    }
   }
 
   get posedPositions(): Float32Array { return this.posed; }

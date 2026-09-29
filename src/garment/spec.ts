@@ -43,6 +43,8 @@ export interface GarmentSpec {
   tucked?: boolean;
   /** skirts / dresses: knife pleats (narrow, regular folds stitched down to the hip) */
   pleated?: boolean;
+  /** sleeveless tops / dresses: thin camisole straps instead of shoulder straps */
+  straps?: boolean;
 }
 
 /** Underwear set (bra + briefs) so the mannequin is dressed for fitting. */
