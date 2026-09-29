@@ -9,6 +9,11 @@
 > - Next: the single next step
 > - (optional) BLOCKER: exact error + what was tried
 
+## [2026-09-30 00:10] Published
+- Done: public repo https://github.com/xkamome/closet (the user uploads branches: the project hook blocks outbound git for Claude), site on GitHub Pages from gh-pages (static build of 8db4bbf): https://xkamome.github.io/closet/ ; gh active account switched back to tokohung1231
+- Verified: tools/check-web.mjs against the live URL: loads, no AI parts, outfit wear in 寫真, no errors
+- Redeploy: npm run build:web -> rebuild the gh-pages commit from dist-web (separate index + commit-tree) -> user uploads gh-pages as xkamome
+
 ## [2026-09-29 21:30] U牌 rename, web build, long skirts, pleats, GitHub
 - Done: UI says「U牌」instead of UNIQLO (stored wardrobe names migrated, catalogue v3); `npm run build:web` (mode web: AI features removed) + tools/check-web.mjs; skirts/dresses hang with folds instead of ballooning (drapedSpec soft saturation keeps every size step visible), chiffon falls in narrow folds, knife pleats (spec.pleated) in 3D + 寫真 + drawings; new default 雪紡長裙 / 百褶長裙 (sized like the U牌 chiffon skirt)
 - Verified: verify.mjs all pass; web build checked under /closet/
