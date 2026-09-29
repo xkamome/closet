@@ -28,11 +28,40 @@ export function aimBone(body: Body, pose: PoseQuats, name: string, dir: Vector3,
   pose[name] = [local.x, local.y, local.z, local.w];
 }
 
-export function buildPose(body: Body, name: PoseName): PoseQuats {
+/**
+ * stance: how far apart the feet are when standing. 1 = the captured pose (feet a little apart),
+ * 0 = feet together (legs aimed so the ankles almost touch, like a catalogue pose).
+ */
+export function buildPose(body: Body, name: PoseName, stance = 1): PoseQuats {
   const P = body.data.poses;
   if (name === "rest") return {};
   if (name === "tpose") return { ...P.tpose };
   const pose: PoseQuats = { ...(P.standing02 ?? {}) };
+  if (name !== "sit" && stance < 0.999) {
+    const together: PoseQuats = { ...pose };
+    for (const s of ["L", "R"] as const) {
+      const x = s === "L" ? 1 : -1;
+      body.setPose(together);
+      const hip = body.bonePosed(`upperleg01.${s}`);
+      const ankle = body.bonePosed(`foot.${s}`);
+      const len = hip.distanceTo(ankle) || 0.8;
+      // straight leg from the hip joint to an ankle 4.5 cm off the centre line
+      const dx = (x * 0.045 - hip.x) / len;
+      aimBone(body, together, `upperleg01.${s}`, new Vector3(dx, -1, 0.01));
+      aimBone(body, together, `upperleg02.${s}`, new Vector3(dx, -1, 0.01));
+      aimBone(body, together, `lowerleg01.${s}`, new Vector3(dx * 0.4, -1, -0.01));
+      aimBone(body, together, `lowerleg02.${s}`, new Vector3(dx * 0.4, -1, -0.01));
+      aimBone(body, together, `foot.${s}`, new Vector3(0.12 * x, -0.5, 1));
+    }
+    const qa = new Quaternion(), qb = new Quaternion();
+    for (const k of Object.keys(together)) {
+      if (!/^(upperleg|lowerleg|foot|toe)/.test(k)) continue;
+      qa.fromArray(pose[k] ?? [0, 0, 0, 1]);
+      qb.fromArray(together[k]);
+      qa.slerp(qb, 1 - Math.max(0, stance));
+      pose[k] = [qa.x, qa.y, qa.z, qa.w];
+    }
+  }
   if (name === "sit") {
     for (const s of ["L", "R"] as const) {
       const x = s === "L" ? 1 : -1; // MakeHuman: +x is the figure's left

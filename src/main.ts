@@ -13,7 +13,7 @@ import { buildGarment } from "./garment/build";
 import { buildAtlas, cutoutGarment, cutoutFromMask, guessGarment, loadImage, looksLikePerson, toCanvas, type AvatarMarks, type Cutout } from "./garment/photo";
 import { analyzePersonGarments, marksFromLandmarks, type PersonGarment } from "./garment/personPhoto";
 import { segmentPerson, preloadSegmenter } from "./photo/segmenter";
-import { defaultSpec, underwearSpecs, TYPE_LABELS, SLEEVE_LABELS, SILHOUETTE_LABELS, type GarmentSpec, type GarmentType } from "./garment/spec";
+import { defaultSpec, riseOffset, specFor, tuckedSpec, underwearSpecs, TYPE_LABELS, SLEEVE_LABELS, SILHOUETTE_LABELS, type GarmentSpec, type GarmentType } from "./garment/spec";
 import { parseSizeChart, GARMENT_KEY_LABELS, type ParsedChart, type GarmentKey } from "./fit/sizeChart";
 import { parseFabric, stretchLabel, DEFAULT_FABRIC, type Fabric } from "./fit/fabric";
 import { evaluateFit, recommendSize, type FitResult } from "./fit/fit";
@@ -21,6 +21,13 @@ import { classifyBodyShape } from "./style/bodyShape";
 import { buildAdvice, buildAIPrompt } from "./style/advice";
 import { measureFromPhotos, detectPerson, preloadPoseModel } from "./photo/bodyFromPhoto";
 import { wardrobe, packGarment, unpackCutout, type SavedGarment } from "./app/wardrobe";
+import { seedDefaults } from "./app/defaults";
+import { avatars, exportAvatar, parseAvatarFile, type AvatarSnapshot } from "./app/avatars";
+import { buildGenPrompt, packGenerated, parseGenItems, readKeywordList, wearGenerated } from "./app/generate";
+import { OUTFITS, colorIndex, seedUniqlo, sizeNote, uniqloItem, wearUniqlo } from "./app/uniqloWear";
+import { LookMode } from "./look/lookMode";
+import { MyFace, analyzeSelfie, type Selfie } from "./face/myFace";
+import type { LookStyle } from "./look/render";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
@@ -66,6 +73,10 @@ interface Worn {
   underwear?: boolean;
   sizeText?: string;
   fabricText?: string;
+  /** UNIQLO basic: product id, colour index, the size recommended for this body */
+  uniqlo?: { id: string; color: number; recommended: string };
+  /** generated from a description: sized like a UNIQLO basic */
+  generated?: { design: import("./app/generate").GenItem; base: string; recommended: string };
 }
 let nextId = 1;
 
@@ -78,10 +89,32 @@ async function main() {
   const avatar = new AvatarView(body);
   stage.turntable.add(avatar.group);
 
+  const look = new LookMode($("stage"), body, measurer);
+  let lookStyle: "3d" | LookStyle = "3d";
+  try { lookStyle = localStorage.getItem("closet2.look") === "photo" ? "photo" : "3d"; } catch { /* storage unavailable */ }
+  let lookTimer = 0;
+  /** redraw the look image (debounced; the 3D view keeps running underneath) */
+  const refreshLook = () => {
+    clearTimeout(lookTimer);
+    lookTimer = window.setTimeout(async () => {
+      $("look-save").hidden = lookStyle === "3d";
+      $("look-note").hidden = lookStyle === "3d" || poseName !== "sit";
+      if (lookStyle === "3d") { look.hide(); return; }
+      $("busy").hidden = false;
+      try {
+        await look.show(lookStyle, meas, worn.map((w) => ({ spec: effectiveSpec(w), cutout: w.cutout, layer: layerOf(w) })),
+          { underwear: $<HTMLInputElement>("underwear").checked, half: poseName === "half", heat: heatmap, stance });
+      } catch (e) { console.error(e); }
+      $("busy").hidden = true;
+    }, 30);
+  };
+
   const profile = store.load();
   let meas: Measurements = measurer.measure(body);
   let poseName: PoseName = "stand";
-  let currentPose = buildPose(body, "stand");
+  let stance = 1;
+  try { const v = parseFloat(localStorage.getItem("closet2.stance") ?? ""); if (v >= 0 && v <= 1) stance = v; } catch { /* storage unavailable */ }
+  let currentPose = buildPose(body, "stand", stance);
   const worn: Worn[] = [];
   let underwear: Worn[] = [];
   let selected: Worn | null = null;
@@ -124,7 +157,7 @@ async function main() {
     const t0 = performance.now();
     const res = solveMeasurements(body, measurer, targets, { weightKg: profile.weight, extra: profile.extra });
     meas = res.measured;
-    currentPose = buildPose(body, poseName === "half" ? "stand" : poseName);
+    currentPose = buildPose(body, poseName === "half" ? "stand" : poseName, stance);
     body.setPose(currentPose);
     avatar.update();
     rebuildAll();
@@ -136,6 +169,7 @@ async function main() {
       : `已套用（${Math.round(performance.now() - t0)}ms），誤差都在 1.5cm 內。`;
     renderStyle();
     refreshFit();
+    if (selfie) refreshFace(); else refreshLook();
   });
 
   // ------------------------------------------------------------ pose & stage
@@ -171,10 +205,11 @@ async function main() {
   const setPose = (p: PoseName) => {
     poseName = p;
     document.querySelectorAll<HTMLButtonElement>("#pose-group button").forEach((b) => b.classList.toggle("on", b.dataset.pose === p));
-    const target = buildPose(body, p === "half" ? "stand" : p);
+    const target = buildPose(body, p === "half" ? "stand" : p, stance);
     body.setPose(currentPose);
     poseAnim = { from: currentPose, to: target, t: 0 };
     if (p === "half") stage.setFraming("half");
+    refreshLook();
   };
   stage.onFrame = (dt) => {
     if (!poseAnim) return;
@@ -197,7 +232,17 @@ async function main() {
   stage.onQualityDrop = () => { $<HTMLInputElement>("quality").checked = false; };
 
   // ------------------------------------------------------------ garments
-  const layerOf = (w: Worn) => (w.underwear ? 0 : w.spec.type === "top" ? 2 : 1);
+  const bottomOf = () => worn.find((o) => o.spec.type === "skirt" || o.spec.type === "pants") ?? null;
+  const isTucked = (w: Worn) => w.spec.type === "top" && !!w.spec.tucked && !!bottomOf();
+  /** 0 underwear, then inner to outer: a tucked top goes under the skirt / trousers */
+  const layerOf = (w: Worn) => {
+    if (w.underwear) return 0;
+    const tucked = worn.some(isTucked);
+    if (w.spec.type === "top") return tucked ? 1 : 2;
+    return tucked ? 2 : 1;
+  };
+  /** the spec actually built (a tucked top is shortened to end inside the waistband) */
+  const effectiveSpec = (w: Worn): GarmentSpec => (isTucked(w) ? tuckedSpec(w.spec, bottomOf()!.spec, meas) : w.spec);
   // avatar landmarks (rest coordinates) for warping photos of people onto garments
   const avatarMarks = (): AvatarMarks => {
     const j = (n: string) => body.joint(n);
@@ -217,7 +262,8 @@ async function main() {
   const underOf = (w: Worn) => {
     if (w.underwear) return [];
     const list = underwear.filter((u) => u.view);
-    if (w.spec.type === "top") list.push(...worn.filter((o) => o !== w && (o.spec.type === "skirt" || o.spec.type === "pants") && o.view));
+    // everything on a lower layer is underneath (bottoms under an untucked top, a tucked top under the bottoms)
+    list.push(...worn.filter((o) => o !== w && o.view && o.spec.type !== "dress" && w.spec.type !== "dress" && layerOf(o) < layerOf(w)));
     return list;
   };
   let lastWearMs = 0;
@@ -231,7 +277,7 @@ async function main() {
       return { pos: gm.rest, normals: computeNormals(gm.rest, gm.index, gm.vertexCount), count: gm.vertexCount };
     });
     const t1 = performance.now();
-    const gm = buildGarment(w.spec, { body, measurer, m: meas, layer: layerOf(w), under });
+    const gm = buildGarment(effectiveSpec(w), { body, measurer, m: meas, layer: layerOf(w), under });
     body.setPose(saved);
     const t2 = performance.now();
     const atlas = buildAtlas(w.cutout, { bbox: gm.bbox, torsoHalfWidth: gm.torsoHalfWidth, plainBack: w.plainBack, avatarMarks: avatarMarks() }, w.spec.color ?? "#7a93b8");
@@ -263,14 +309,18 @@ async function main() {
       w.view.update(true, seatInfo);
     }
   };
-  $<HTMLInputElement>("underwear").addEventListener("change", (e) => busy(() => setUnderwear((e.target as HTMLInputElement).checked)));
+  $<HTMLInputElement>("underwear").addEventListener("change", (e) => busy(() => { setUnderwear((e.target as HTMLInputElement).checked); refreshLook(); }));
   $<HTMLInputElement>("heatmap").addEventListener("change", (e) => {
     heatmap = (e.target as HTMLInputElement).checked;
     $("legend").hidden = !heatmap;
     for (const w of worn) w.view?.setHeatmap(heatmap);
+    refreshLook();
   });
 
   const slotOf = (t: GarmentType) => (t === "top" ? "upper" : t === "dress" ? "full" : "lower");
+  const rebuildTopBottom = () => {
+    for (const o of worn.filter((x) => x.spec.type !== "dress").sort((a, b) => layerOf(a) - layerOf(b))) buildView(o);
+  };
   const wear = (spec: GarmentSpec, cutout: Cutout | null, plainBack: boolean) => busy(() => {
     const slot = slotOf(spec.type);
     // replace garments occupying the same body area
@@ -281,31 +331,23 @@ async function main() {
     const w: Worn = { id: nextId++, spec, cutout, plainBack, view: null, chart: null, fit: null };
     worn.push(w);
     buildView(w);
-    if (spec.type === "skirt" || spec.type === "pants") for (const t of worn.filter((o) => o.spec.type === "top")) buildView(t);
+    // layering between top and bottom may have changed: rebuild both, inner first
+    if (spec.type === "skirt" || spec.type === "pants" || spec.type === "top") rebuildTopBottom();
     selected = w;
     renderWorn();
     renderSizeTargets();
     renderStyle();
+    refreshLook();
     return w;
   });
 
-  const readGarmentForm = (): GarmentSpec => {
-    const type = $<HTMLSelectElement>("g-type").value as GarmentType;
-    const spec = defaultSpec(type, meas);
-    spec.silhouette = $<HTMLSelectElement>("g-silhouette").value as any;
-    spec.sleeve = type === "skirt" || type === "pants" ? "none" : ($<HTMLSelectElement>("g-sleeve").value as any);
-    spec.neckline = $<HTMLSelectElement>("g-neck").value as any;
-    spec.rise = $<HTMLSelectElement>("g-rise").value as any;
-    spec.color = $<HTMLInputElement>("g-color").value;
-    if (spec.silhouette === "oversized" && spec.m.chest) { spec.m.chest += 16; spec.m.shoulder = (spec.m.shoulder ?? meas.shoulder) + 6; }
-    if (spec.silhouette === "fitted" && spec.m.chest) { spec.m.chest = meas.bust + 4; spec.m.waist = meas.waist + 5; }
-    if (spec.silhouette === "aline" && spec.m.hem) spec.m.hem = Math.max(spec.m.hem, (spec.m.hip ?? meas.hips) * 1.45);
-    if (spec.silhouette === "straight" && (type === "skirt" || type === "dress")) spec.m.hem = (spec.m.hip ?? meas.hips + 8) * 1.02;
-    if (spec.silhouette === "fitted" && type === "skirt") { spec.m.hip = meas.hips + 4; spec.m.hem = meas.hips - 2; }
-    if (spec.sleeve === "long") spec.m.sleeveLength = meas.armLength;
-    if (spec.sleeve === "elbow") spec.m.sleeveLength = meas.armLength * 0.55;
-    return spec;
-  };
+  const readGarmentForm = (): GarmentSpec => specFor($<HTMLSelectElement>("g-type").value as GarmentType, {
+    silhouette: $<HTMLSelectElement>("g-silhouette").value as any,
+    sleeve: $<HTMLSelectElement>("g-sleeve").value as any,
+    neckline: $<HTMLSelectElement>("g-neck").value as any,
+    rise: $<HTMLSelectElement>("g-rise").value as any,
+    color: $<HTMLInputElement>("g-color").value,
+  }, meas);
 
   let personGarments: PersonGarment[] = [];
   let personTiming: Record<string, number> = {};
@@ -388,7 +430,7 @@ async function main() {
       // garment length read off the photo, transferred through the body landmarks
       const hemCm = chainCm(pendingHemT);
       const top = spec.type === "skirt" || spec.type === "pants"
-        ? meas.waistY + (spec.rise === "high" ? 3 : spec.rise === "low" ? -6 : 0)
+        ? meas.waistY + riseOffset(spec.type, spec.rise) * 100
         : meas.neckY;
       spec.m.length = Math.max(spec.type === "top" ? 30 : 25, Math.round(top - hemCm));
       if (spec.type === "pants") spec.m.inseam = Math.max(20, Math.round(meas.crotchY - hemCm));
@@ -409,8 +451,59 @@ async function main() {
       else { thumb.className = "swatch"; thumb.style.background = w.spec.color ?? "#999"; }
       li.appendChild(thumb);
       const label = document.createElement("span");
-      label.textContent = `${SILHOUETTE_LABELS[w.spec.silhouette]}${TYPE_LABELS[w.spec.type]}${w.spec.size ? `（${w.spec.size}）` : ""}・${w.spec.fabric.label}`;
+      label.textContent = w.uniqlo ? `UNIQLO ${uniqloItem(w.uniqlo.id)?.name ?? ""}・${sizeNote(uniqloItem(w.uniqlo.id)!, w.spec.size ?? "", w.uniqlo.recommended)}`
+        : w.generated ? `${w.generated.design.name}・${sizeNote(uniqloItem(w.generated.base)!, w.spec.size ?? "", w.generated.recommended)}`
+        : `${SILHOUETTE_LABELS[w.spec.silhouette]}${TYPE_LABELS[w.spec.type]}${w.spec.size ? `（${w.spec.size}）` : ""}・${w.spec.fabric.label}`;
       li.appendChild(label);
+      const u = w.uniqlo && uniqloItem(w.uniqlo.id);
+      if (u && w.uniqlo) {
+        const uq = w.uniqlo;
+        const sizeSel = document.createElement("select");
+        sizeSel.className = "uq-size";
+        sizeSel.title = "尺碼（★ 是依你的身形推薦的）";
+        sizeSel.innerHTML = u.sizes.map((z) => `<option value="${z.size}" ${z.size === w.spec.size ? "selected" : ""}>${z.size}${z.size === uq.recommended ? " ★" : ""}</option>`).join("");
+        const colorSel = document.createElement("select");
+        colorSel.className = "uq-color";
+        colorSel.innerHTML = u.colors.map((c, k) => `<option value="${k}" ${k === uq.color ? "selected" : ""}>${c.name}</option>`).join("");
+        const reWear = () => busy(() => {
+          const r = wearUniqlo(u, Number(colorSel.value), meas, sizeSel.value);
+          w.spec = { ...r.spec, tucked: w.spec.tucked } as GarmentSpec;
+          w.cutout = r.cutout; w.chart = r.chart; w.fit = r.fit;
+          w.uniqlo = { id: u.id, color: Number(colorSel.value), recommended: r.recommended };
+          if (w.spec.type === "dress") buildView(w); else rebuildTopBottom();
+          renderWorn(); renderStyle(); refreshLook();
+        });
+        sizeSel.onchange = reWear;
+        colorSel.onchange = reWear;
+        li.append(sizeSel, colorSel);
+      }
+      if (w.spec.type === "top" && bottomOf()) {
+        const tuck = document.createElement("button");
+        tuck.className = "tuck";
+        tuck.textContent = w.spec.tucked ? "放出來" : "紮進去";
+        tuck.title = w.spec.tucked ? "衣襬放在褲子／裙子外面" : "把衣襬紮進褲子／裙子裡";
+        tuck.onclick = () => busy(() => {
+          w.spec = { ...w.spec, tucked: !w.spec.tucked };
+          rebuildTopBottom();
+          renderWorn(); refreshLook();
+        });
+        li.append(tuck);
+      }
+      if (w.generated) {
+        const gen = w.generated;
+        const bu = uniqloItem(gen.base)!;
+        const sizeSel = document.createElement("select");
+        sizeSel.className = "uq-size";
+        sizeSel.title = "尺碼（依 UNIQLO 基本款，★ 是依你的身形推薦的）";
+        sizeSel.innerHTML = bu.sizes.map((z) => `<option value="${z.size}" ${z.size === w.spec.size ? "selected" : ""}>${z.size}${z.size === gen.recommended ? " ★" : ""}</option>`).join("");
+        sizeSel.onchange = () => busy(() => {
+          const r = wearGenerated(gen.design, gen.base, meas, sizeSel.value);
+          w.spec = { ...r.spec, tucked: w.spec.tucked }; w.chart = r.chart; w.fit = r.fit;
+          if (w.spec.type === "dress") buildView(w); else rebuildTopBottom();
+          renderWorn(); renderStyle(); refreshLook();
+        });
+        li.append(sizeSel);
+      }
       const sel = document.createElement("button");
       sel.textContent = "選取";
       sel.onclick = () => { selected = w; renderWorn(); renderSizeTargets(); };
@@ -426,7 +519,11 @@ async function main() {
       li.append(save);
       const del = document.createElement("button");
       del.textContent = "脫下";
-      del.onclick = () => { w.view?.dispose(); worn.splice(worn.indexOf(w), 1); if (selected === w) selected = worn[0] ?? null; renderWorn(); renderSizeTargets(); renderStyle(); };
+      del.onclick = () => {
+        w.view?.dispose(); worn.splice(worn.indexOf(w), 1); if (selected === w) selected = worn[0] ?? null;
+        if (w.spec.type !== "dress") rebuildTopBottom();
+        renderWorn(); renderSizeTargets(); renderStyle(); refreshLook();
+      };
       li.append(sel, del);
       ul.appendChild(li);
     }
@@ -447,8 +544,28 @@ async function main() {
       const wearBtn = document.createElement("button");
       wearBtn.textContent = "穿上";
       wearBtn.onclick = async () => {
+        if (g.generated) {
+          const r = wearGenerated(g.generated.design, g.generated.base, meas);
+          const w = await wear(r.spec, await unpackCutout(g), false);
+          w.chart = r.chart; w.fit = r.fit;
+          w.generated = { ...g.generated, recommended: r.recommended };
+          renderWorn(); renderStyle();
+          return;
+        }
+        const uq = g.uniqlo && uniqloItem(g.uniqlo.id);
+        if (uq && g.uniqlo) {
+          await wearUq(uq.id, g.uniqlo.color);
+          renderWorn(); renderStyle();
+          return;
+        }
         const cutout = await unpackCutout(g);
-        const w = await wear(structuredClone(g.spec), cutout, g.plainBack);
+        let spec = structuredClone(g.spec);
+        if (g.preset) {
+          // preset items are cut for whoever wears them now
+          spec = specFor(g.preset.type, g.preset, meas);
+          if (g.fabricText) spec.fabric = parseFabric(g.fabricText);
+        }
+        const w = await wear(spec, cutout, g.plainBack);
         if (g.sizeText) {
           w.sizeText = g.sizeText; w.fabricText = g.fabricText;
           w.chart = parseSizeChart(g.sizeText);
@@ -460,10 +577,74 @@ async function main() {
       const del = document.createElement("button");
       del.textContent = "刪除";
       del.onclick = async () => { await wardrobe.remove(g.id); renderWardrobe(); };
+      if (g.preset) label.title = "依你目前的身形自動調整尺寸";
       li.append(img, label, wearBtn, del);
       ul.appendChild(li);
     }
   };
+
+  /** wear a UNIQLO basic (recommended size for this body) */
+  const wearUq = async (id: string, color: number, tucked = false) => {
+    const u = uniqloItem(id);
+    if (!u) return null;
+    const r = wearUniqlo(u, color, meas);
+    if (tucked) r.spec.tucked = true;
+    const w = await wear(r.spec, r.cutout, true);
+    w.chart = r.chart; w.fit = r.fit;
+    w.uniqlo = { id: u.id, color, recommended: r.recommended };
+    return w;
+  };
+  const chips = $("outfit-chips");
+  for (const o of OUTFITS) {
+    const b = document.createElement("button");
+    b.textContent = o.name;
+    b.dataset.outfit = o.name;
+    b.onclick = async () => {
+      // an outfit replaces what is worn
+      for (const w of [...worn]) { w.view?.dispose(); worn.splice(worn.indexOf(w), 1); }
+      // bottoms first so a tucked top can go inside them
+      const items = [...o.items].sort((a, c) => (uniqloItem(a.id)?.type === "top" ? 1 : 0) - (uniqloItem(c.id)?.type === "top" ? 1 : 0));
+      for (const it of items) await wearUq(it.id, colorIndex(uniqloItem(it.id)!, it.color), !!o.tucked && uniqloItem(it.id)?.type === "top");
+      rebuildTopBottom();
+      renderWorn(); renderSizeTargets(); renderStyle(); refreshLook();
+    };
+    chips.appendChild(b);
+  }
+
+  $("gen-go").addEventListener("click", async () => {
+    const text = $<HTMLTextAreaElement>("gen-text").value.trim();
+    const count = Number($<HTMLSelectElement>("gen-count").value);
+    const status = (t: string) => { $("gen-status").textContent = t; };
+    if (!text) { status("請先描述想要的衣服或衣櫃風格。"); return; }
+    const btn = $<HTMLButtonElement>("gen-go");
+    btn.disabled = true;
+    let items: ReturnType<typeof readKeywordList> = [];
+    try {
+      status("AI 設計中（通常 20–60 秒）…");
+      try {
+        const r = await fetch("/api/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: buildGenPrompt(text, count) }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        items = parseGenItems(j.text);
+      } catch (e: any) {
+        // no bridge (or an unusable answer): read the description with keywords
+        items = readKeywordList(text);
+        status(`AI 中繼沒有回應（${e.message}），改用關鍵字判斷。`);
+      }
+      const t0 = Date.now();
+      for (const [i, it] of items.entries()) await wardrobe.put(await packGenerated(it, t0 + (items.length - i)));
+      await renderWardrobe();
+      status(`已放進衣櫃 ${items.length} 件：${items.map((x) => x.name).join("、")}。在下方衣櫃按「穿上」試穿。`);
+    } catch (e: any) {
+      status("生成失敗：" + e.message);
+    } finally { btn.disabled = false; }
+  });
+
+  $("wardrobe-defaults").addEventListener("click", async () => {
+    const n = (await seedDefaults(true)) + (await seedUniqlo(true));
+    $("wardrobe-defaults").textContent = n ? `已放回 ${n} 件預設衣服` : "預設衣服都在衣櫃裡了";
+    renderWardrobe();
+  });
 
   // ------------------------------------------------------------ size chart & fit
   const renderSizeTargets = () => {
@@ -516,11 +697,12 @@ async function main() {
     const base = defaultSpec(w.spec.type, meas);
     w.spec = { ...w.spec, fabric, size, m: { ...base.m, ...w.spec.m, ...row.values } };
     // lengths not in the chart keep the silhouette defaults; girths from the chart win
-    buildView(w);
+    if (w.spec.type === "dress") buildView(w); else rebuildTopBottom();
     w.fit = evaluateFit(row, meas, w.spec.type, fabric, w.spec.sleeve);
     renderFit(w.fit);
     renderWorn();
     renderStyle();
+    refreshLook();
   });
 
   const renderFit = (f: FitResult) => {
@@ -604,6 +786,9 @@ async function main() {
     avatar.setSkin(profile.skin, profile.skinTint);
     avatar.setHair(profile.hair || null);
     avatar.setHairColor(profile.hairColor);
+    look.setLook(profile.skin, profile.skinTint, profile.hair || null, profile.hairColor);
+    // setSkin reloads the plain skin texture: put the face back on
+    if (selfie) refreshFace(); else refreshLook();
     $<HTMLSelectElement>("skin").value = profile.skin;
     $<HTMLInputElement>("skin-tint").value = profile.skinTint;
     $<HTMLSelectElement>("hair").value = profile.hair;
@@ -612,6 +797,94 @@ async function main() {
   for (const [id, key] of [["skin", "skin"], ["skin-tint", "skinTint"], ["hair", "hair"], ["hair-color", "hairColor"]] as const) {
     $(id).addEventListener("input", (e) => { (profile as any)[key] = (e.target as HTMLInputElement).value; store.save(profile); applyLook(); });
   }
+
+  // ------------------------------------------------------------ my face (selfie on the avatar)
+  const myFace = new MyFace(body);
+  let selfie: Selfie | null = null;
+  let faceTimer = 0;
+  const faceStatus = (t: string) => { $("face-status").textContent = t; };
+  const skinTexture = () => (data.skins.find((k) => k.name === profile.skin) ?? data.skins[0]).texture;
+  /** (re)compose the face for the current body, skin and strength (debounced) */
+  const refreshFace = () => {
+    clearTimeout(faceTimer);
+    faceTimer = window.setTimeout(async () => {
+      if (!selfie) {
+        MyFace.apply(avatar, null);
+        look.setFace(null);
+        avatar.setSkin(profile.skin, profile.skinTint);
+        look.setLook(profile.skin, profile.skinTint, profile.hair || null, profile.hairColor);
+        refreshLook();
+        return;
+      }
+      $("busy").hidden = false;
+      try {
+        const c = await myFace.compose(selfie, skinTexture(), Number($<HTMLInputElement>("face-strength").value));
+        if (!c) { faceStatus("假人的臉部偵測失敗，請稍後再試一次。"); return; }
+        MyFace.apply(avatar, c);
+        look.setFace(c);
+        refreshLook();
+      } catch (e: any) {
+        console.error(e);
+        faceStatus("合成失敗：" + e.message);
+      } finally { $("busy").hidden = true; }
+    }, 120);
+  };
+  const saveSelfie = (c: HTMLCanvasElement | null) => {
+    try {
+      if (c) localStorage.setItem("closet2.face", c.toDataURL("image/jpeg", 0.9));
+      else localStorage.removeItem("closet2.face");
+    } catch { /* storage full or unavailable: the face just won't come back next time */ }
+  };
+  const HAIR_LABEL = Object.fromEntries(data.hair.map((h) => [h.name, h.label]));
+  $<HTMLInputElement>("face-photo").addEventListener("change", async (e) => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    faceStatus("分析照片中…（第一次需要載入臉部偵測模型）");
+    $("busy").hidden = false;
+    try {
+      const s = await analyzeSelfie(await loadImage(f));
+      if (!s) { faceStatus("照片裡找不到臉。請換一張正面、清楚、臉部夠大的照片。"); return; }
+      selfie = s;
+      saveSelfie(s.canvas);
+      if (s.hair) {
+        profile.hair = s.hair.style;
+        profile.hairColor = s.hair.color;
+        store.save(profile);
+        $<HTMLSelectElement>("hair").value = profile.hair;
+        $<HTMLInputElement>("hair-color").value = profile.hairColor;
+      }
+      applyLook();
+      faceStatus(`已套用：五官、膚色${s.iris ? "、眼睛顏色" : ""}${s.hair ? `、髮色、髮型「${HAIR_LABEL[s.hair.style]}」（${s.hair.reason}）` : ""}。髮型和膚色都可以在上面「外觀」再改。`);
+    } catch (err: any) {
+      console.error(err);
+      faceStatus("分析失敗：" + err.message);
+    } finally { $("busy").hidden = true; }
+  });
+  $<HTMLInputElement>("face-strength").addEventListener("input", () => {
+    try { localStorage.setItem("closet2.faceStrength", $<HTMLInputElement>("face-strength").value); } catch { /* ignore */ }
+    if (selfie) refreshFace();
+  });
+  $("face-remove").addEventListener("click", () => {
+    selfie = null;
+    saveSelfie(null);
+    $<HTMLInputElement>("face-photo").value = "";
+    faceStatus("已移除，假人恢復原本的臉。");
+    refreshFace();
+  });
+  try { const v = localStorage.getItem("closet2.faceStrength"); if (v) $<HTMLInputElement>("face-strength").value = v; } catch { /* ignore */ }
+  /** a face saved earlier comes back (hair / skin choices are already in the profile) */
+  const restoreFace = async () => {
+    let url: string | null = null;
+    try { url = localStorage.getItem("closet2.face"); } catch { /* ignore */ }
+    if (!url) return;
+    try {
+      const s = await analyzeSelfie(await loadImage(url));
+      if (!s) return;
+      selfie = s;
+      refreshFace();
+      faceStatus("已套用之前上傳的自拍。");
+    } catch (e) { console.warn("saved face could not be restored", e); }
+  };
 
   // ------------------------------------------------------------ photo measuring
   document.querySelector("#tab-body details")?.addEventListener("toggle", () => preloadPoseModel());
@@ -629,6 +902,131 @@ async function main() {
     } catch (e: any) {
       $("photo-status").textContent = "量身失敗：" + e.message;
     }
+  });
+
+  // ------------------------------------------------------------ stance (feet together <-> apart)
+  const stanceInput = $<HTMLInputElement>("stance");
+  stanceInput.value = String(stance);
+  let stanceTimer = 0;
+  stanceInput.addEventListener("input", () => {
+    stance = Number(stanceInput.value);
+    try { localStorage.setItem("closet2.stance", String(stance)); } catch { /* ignore */ }
+    // re-pose once the slider rests (garments re-drape at the end of the pose blend)
+    clearTimeout(stanceTimer);
+    stanceTimer = window.setTimeout(() => setPose(poseName), 120);
+  });
+
+  // ------------------------------------------------------------ saved avatars (我的假人)
+  const avatarStatus = (t: string) => { $("avatar-status").textContent = t; };
+  const renderAvatarList = (selectId?: string) => {
+    const list = avatars.list();
+    const sel = $<HTMLSelectElement>("avatar-list");
+    sel.innerHTML = list.length ? list.map((a) => `<option value="${a.id}">${esc(a.name)}（${new Date(a.savedAt).toLocaleDateString("zh-TW")}）</option>`).join("")
+      : `<option value="">（還沒有存過）</option>`;
+    if (selectId) sel.value = selectId;
+  };
+  const snapshot = (): AvatarSnapshot => ({
+    targets: { ...profile.targets } as Record<string, number>, weight: profile.weight, extra: { ...(profile.extra ?? {}) },
+    skin: profile.skin, skinTint: profile.skinTint, hair: profile.hair, hairColor: profile.hairColor,
+    face: selfie ? selfie.canvas.toDataURL("image/jpeg", 0.9) : null,
+    faceStrength: Number($<HTMLInputElement>("face-strength").value), stance,
+  });
+  const applySnapshot = async (a: AvatarSnapshot) => {
+    profile.targets = { ...a.targets } as Targets;
+    profile.weight = a.weight;
+    profile.extra = { ...(a.extra ?? {}) };
+    Object.assign(profile, { skin: a.skin, skinTint: a.skinTint, hair: a.hair, hairColor: a.hairColor });
+    store.save(profile);
+    fillBodyForm();
+    sliderBox.querySelectorAll<HTMLInputElement>("input[type=range]").forEach((inp) => {
+      const v = profile.extra?.[inp.dataset.key!] ?? 0;
+      inp.value = String(v);
+      inp.parentElement!.querySelector("output")!.textContent = v.toFixed(2);
+    });
+    if (a.faceStrength) $<HTMLInputElement>("face-strength").value = String(a.faceStrength);
+    if (a.stance !== undefined) { stance = a.stance; stanceInput.value = String(stance); try { localStorage.setItem("closet2.stance", String(stance)); } catch { /* ignore */ } }
+    selfie = null;
+    if (a.face) {
+      try { selfie = await analyzeSelfie(await loadImage(a.face)); } catch (e) { console.warn(e); }
+    }
+    saveSelfie(selfie?.canvas ?? null);
+    faceStatus(selfie ? "已套用這個假人的自拍。" : "");
+    applyLook();
+    await applyBody(profile.targets);
+    setPose(poseName);
+  };
+  $("avatar-save").addEventListener("click", () => {
+    const name = $<HTMLInputElement>("avatar-name").value.trim() || `假人 ${new Date().toLocaleString("zh-TW")}`;
+    try {
+      const a = avatars.save(name, snapshot());
+      renderAvatarList(a.id);
+      avatarStatus(`已儲存「${name}」。`);
+    } catch {
+      avatarStatus("瀏覽器儲存空間不夠，請刪除一些舊的假人，或用「匯出檔案」存到電腦。");
+    }
+  });
+  $("avatar-load").addEventListener("click", () => busy(async () => {
+    const a = avatars.list().find((x) => x.id === $<HTMLSelectElement>("avatar-list").value);
+    if (!a) { avatarStatus("請先選一個已存的假人。"); return; }
+    await applySnapshot(a.snapshot);
+    $<HTMLInputElement>("avatar-name").value = a.name;
+    avatarStatus(`已讀取「${a.name}」。`);
+  }));
+  $("avatar-delete").addEventListener("click", () => {
+    const id = $<HTMLSelectElement>("avatar-list").value;
+    const a = avatars.list().find((x) => x.id === id);
+    if (!a) return;
+    const btn = $<HTMLButtonElement>("avatar-delete");
+    // two-step: the first click asks, the second deletes
+    if (btn.dataset.confirm !== id) { btn.dataset.confirm = id; btn.textContent = "確定刪除？"; setTimeout(() => { btn.textContent = "刪除"; delete btn.dataset.confirm; }, 3000); return; }
+    avatars.remove(id);
+    btn.textContent = "刪除"; delete btn.dataset.confirm;
+    renderAvatarList();
+    avatarStatus(`已刪除「${a.name}」。`);
+  });
+  $("avatar-export").addEventListener("click", () => {
+    const id = $<HTMLSelectElement>("avatar-list").value;
+    const a = avatars.list().find((x) => x.id === id) ?? { id: "current", name: $<HTMLInputElement>("avatar-name").value.trim() || "目前的假人", savedAt: Date.now(), snapshot: snapshot() };
+    const url = URL.createObjectURL(exportAvatar(a));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `假人-${a.name}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    avatarStatus(`已匯出「${a.name}」。`);
+  });
+  $<HTMLInputElement>("avatar-import").addEventListener("change", (e) => busy(async () => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    try {
+      const { name, snapshot: snap } = parseAvatarFile(await f.text());
+      await applySnapshot(snap);
+      try { renderAvatarList(avatars.save(name, snap).id); } catch { /* storage full: applied but not stored */ }
+      $<HTMLInputElement>("avatar-name").value = name;
+      avatarStatus(`已匯入並套用「${name}」。`);
+    } catch (err: any) {
+      avatarStatus("匯入失敗：" + err.message);
+    } finally { (e.target as HTMLInputElement).value = ""; }
+  }));
+  renderAvatarList();
+
+  // ------------------------------------------------------------ look display modes
+  const lookSel = $<HTMLSelectElement>("look-style");
+  lookSel.value = lookStyle;
+  lookSel.addEventListener("change", () => {
+    lookStyle = lookSel.value as any;
+    try { localStorage.setItem("closet2.look", lookStyle); } catch { /* ignore */ }
+    refreshLook();
+  });
+  $("look-save").addEventListener("click", () => {
+    look.canvas.toBlob((b) => {
+      if (!b) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(b);
+      a.download = `closet-${lookStyle}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }, "image/png");
   });
 
   // ------------------------------------------------------------ tabs
@@ -651,9 +1049,10 @@ async function main() {
   fillBodyForm();
   applyLook();
   renderWorn();
-  renderWardrobe();
+  seedDefaults().then(() => seedUniqlo()).catch((e) => console.warn("default wardrobe", e)).finally(() => renderWardrobe());
   renderSizeTargets();
   await applyBody(profile.targets);
+  restoreFace();
 
   // test / debugging hook
   (window as any).__closet = {
@@ -665,7 +1064,11 @@ async function main() {
     get wearBreakdown() { return wearBreakdown; },
     get personTiming() { return personTiming; },
     garmentKeys: GARMENT_KEY_LABELS as Record<GarmentKey, string>,
-    setPose, setUnderwear, measureFromPhotos, loadImage,
+    setPose, setUnderwear, measureFromPhotos, loadImage, look,
+    get lookStyle() { return lookStyle; },
+    get stance() { return stance; },
+    get selfie() { return selfie; },
+    avatars,
   };
   (window as any).__ready = true;
 }

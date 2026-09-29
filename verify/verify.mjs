@@ -55,7 +55,8 @@ check("required unit test files", () => {
 check("build (tsc + vite)", () => run("build", "npm run build"));
 check("unit tests (vitest)", () => run("test", "npm test"));
 check("ai bridge", () => run("bridge", "node verify/bridge-check.mjs", 60000));
-check("browser e2e", () => run("e2e", "node verify/e2e.mjs", 300000));
+// ~5 min on a software-rendered browser with every feature covered; leave headroom for a busy machine
+check("browser e2e", () => run("e2e", "node verify/e2e.mjs", 420000));
 
 if (failures.length) {
   console.error(failures.join("\n"));

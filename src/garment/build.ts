@@ -12,7 +12,7 @@ import { computeNormals } from "../avatar/body";
 import type { BodyMeasurer, Measurements } from "../avatar/measure";
 import { convexHull, perimeter, regionTriangles, slice } from "../avatar/measure";
 import { collide, taubinSmooth } from "./collide";
-import type { GarmentSpec } from "./spec";
+import { riseOffset, type GarmentSpec } from "./spec";
 
 export interface GarmentMesh {
   rest: Float32Array;
@@ -183,7 +183,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const stage = (n: string) => { const t = performance.now(); if (ctx.timings) ctx.timings[n] = (ctx.timings[n] ?? 0) + t - __tl; __tl = t; };
   // ---------- landmarks
   const bustY = Y(m.bustY), waistY = Y(m.waistY), hipY = Y(m.hipY), crotchY = Y(m.crotchY), neckY = Y(m.neckY);
-  const waistline = spec.rise === "high" ? waistY + 0.03 : spec.rise === "low" ? waistY - 0.06 : waistY;
+  const waistline = waistY + riseOffset(spec.type, spec.rise);
   const isBottom = spec.type === "skirt" || spec.type === "pants";
   const length = g("length") ?? (spec.type === "top" ? 0.6 : spec.type === "dress" ? 1.0 : spec.type === "skirt" ? 0.55 : 0.95);
   const hemY = spec.cut?.bottomY !== undefined ? Y(spec.cut.bottomY)
@@ -831,13 +831,14 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
           if (onLoop.has(q)) continue;
           ox += work.pos[v * 3] - work.pos[q * 3]; oy += work.pos[v * 3 + 1] - work.pos[q * 3 + 1]; oz += work.pos[v * 3 + 2] - work.pos[q * 3 + 2];
         }
-        // mostly upward (a rib band stands up around the neck), bent to follow the surface
+        // continue the fabric across the edge and lean onto the neck: a rib band hugs the neck, it does
+        // not stand up like a fin (which reads as spikes above the shoulders from the front)
         const ol = Math.hypot(ox, oy, oz) || 1;
-        let dx = (ox / ol) * 0.6, dy = (oy / ol) * 0.6 + 0.4, dz = (oz / ol) * 0.6;
-        const dl = Math.hypot(dx, dy, dz) || 1;
-        dx /= dl; dy /= dl; dz /= dl;
         const toAxis = [nb[0] - p[0], 0, nb[2] - p[2]];
         const tl = Math.hypot(toAxis[0], toAxis[2]) || 1;
+        let dx = (ox / ol) * 0.55 + (toAxis[0] / tl) * 0.45, dy = (oy / ol) * 0.55 + 0.2, dz = (oz / ol) * 0.55 + (toAxis[2] / tl) * 0.45;
+        const dl = Math.hypot(dx, dy, dz) || 1;
+        dx /= dl; dy /= dl; dz /= dl;
         const q = [p[0] + dx * bandH, p[1] + dy * bandH, p[2] + dz * bandH];
         work.pos.push(q[0], q[1], q[2]);
         work.nor.push(-toAxis[0] / tl, 0, -toAxis[2] / tl);

@@ -57,12 +57,60 @@ export class Body {
         rest[o + 2] += delta[d + 2] * w;
       }
     }
+    this.shapeBust();
     this.smoothNipples();
     this.updateSkeleton();
   }
 
+  private bustRegion: { verts: number[]; w: Float32Array; side: Int8Array } | null = null;
+  /**
+   * Bra shaping (the mannequin always wears one): breasts lifted a little and gathered toward the
+   * centre, so tops and underwear show a supported, rounded bust instead of a drooping one.
+   */
+  private shapeBust(): void {
+    const d = this.data, rest = this.rest;
+    const J = (n: string) => {
+      const j = d.jointNames.indexOf(n);
+      if (j < 0) return null;
+      let x = 0, y = 0, z = 0;
+      for (const v of d.joints[j]) { x += rest[v * 3]; y += rest[v * 3 + 1]; z += rest[v * 3 + 2]; }
+      const k = d.joints[j].length;
+      return [x / k, y / k, z / k];
+    };
+    const cL = J("breast.L____tail"), cR = J("breast.R____tail");
+    if (!cL || !cR) return;
+    const R = 0.085;
+    if (!this.bustRegion) {
+      const verts: number[] = [], w: number[] = [], side: number[] = [];
+      for (let i = 0; i < d.bodyVertexCount; i++) {
+        const x = d.base[i * 3];
+        // front of the chest only
+        if (d.base[i * 3 + 2] < 0) continue;
+        verts.push(i); side.push(x >= 0 ? 1 : -1); w.push(0);
+      }
+      this.bustRegion = { verts, w: Float32Array.from(w), side: Int8Array.from(side) };
+    }
+    const { verts, side } = this.bustRegion;
+    // the breast size decides how much there is to lift and gather
+    const depth = Math.max(0, (cL[2] + cR[2]) / 2);
+    const k = Math.min(1, depth / 0.12);
+    verts.forEach((i, n) => {
+      const c = side[n] > 0 ? cL : cR;
+      const dx = rest[i * 3] - c[0], dy = rest[i * 3 + 1] - c[1], dz = rest[i * 3 + 2] - c[2];
+      const dist = Math.hypot(dx, dy * 0.9, dz * 0.7);
+      if (dist > R) return;
+      const t = 1 - dist / R;
+      const f = t * t * (3 - 2 * t) * k;
+      // up 1.2 cm, toward the centre 0.9 cm (never across it), slightly forward for roundness
+      rest[i * 3 + 1] += 0.012 * f;
+      const x = rest[i * 3];
+      rest[i * 3] = x - Math.sign(x) * Math.min(Math.abs(x) * 0.5, 0.009 * f);
+      rest[i * 3 + 2] += 0.003 * f;
+    });
+  }
+
   private nippleRegion: { verts: number[]; nbrs: number[][] } | null = null;
-  /** Mannequin finish: relax the nipple area so garments drape cleanly over the bust. */
+  /** Mannequin finish: flatten the nipple area completely so garments drape cleanly over the bust. */
   private smoothNipples(): void {
     const d = this.data, rest = this.rest;
     if (!this.nippleRegion) {
@@ -74,7 +122,7 @@ export class Body {
         for (const v of vs) { cx += d.base[v * 3]; cy += d.base[v * 3 + 1]; cz += d.base[v * 3 + 2]; }
         cx /= vs.length; cy /= vs.length; cz /= vs.length;
         for (let i = 0; i < d.bodyVertexCount; i++) {
-          if (Math.hypot(d.base[i * 3] - cx, d.base[i * 3 + 1] - cy, d.base[i * 3 + 2] - cz) < 0.028) set.add(i);
+          if (Math.hypot(d.base[i * 3] - cx, d.base[i * 3 + 1] - cy, d.base[i * 3 + 2] - cz) < 0.03) set.add(i);
         }
       }
       const verts = [...set];
@@ -88,7 +136,7 @@ export class Body {
     }
     const { verts, nbrs } = this.nippleRegion;
     const tmp = new Float32Array(verts.length * 3);
-    for (let it = 0; it < 24; it++) {
+    for (let it = 0; it < 20; it++) {
       verts.forEach((v, k) => {
         let x = 0, y = 0, z = 0;
         for (const u of nbrs[k]) { x += rest[u * 3]; y += rest[u * 3 + 1]; z += rest[u * 3 + 2]; }
@@ -96,6 +144,59 @@ export class Body {
         tmp[k * 3] = (rest[v * 3] + x / n) / 2; tmp[k * 3 + 1] = (rest[v * 3 + 1] + y / n) / 2; tmp[k * 3 + 2] = (rest[v * 3 + 2] + z / n) / 2;
       });
       verts.forEach((v, k) => { rest[v * 3] = tmp[k * 3]; rest[v * 3 + 1] = tmp[k * 3 + 1]; rest[v * 3 + 2] = tmp[k * 3 + 2]; });
+    }
+    this.roundApex();
+  }
+
+  /**
+   * Replace the conical breast tip by a dome: fit a sphere to the surface around each apex and move
+   * the vertices near the tip onto it (blended toward the edge), like a moulded bra cup.
+   */
+  private roundApex(): void {
+    const d = this.data, rest = this.rest, R = 0.075;
+    for (const s of [1, -1]) {
+      // apex = the most forward vertex on this side of the chest, between shoulders and waist
+      let apex = -1, best = -Infinity;
+      const nip = d.jointNames.indexOf(s > 0 ? "breast.L____tail" : "breast.R____tail");
+      if (nip < 0) continue;
+      let ny = 0;
+      for (const v of d.joints[nip]) ny += rest[v * 3 + 1];
+      ny /= d.joints[nip].length;
+      for (let i = 0; i < d.bodyVertexCount; i++) {
+        if (rest[i * 3] * s < 0.02 || Math.abs(rest[i * 3 + 1] - ny) > 0.06) continue;
+        if (rest[i * 3 + 2] > best) { best = rest[i * 3 + 2]; apex = i; }
+      }
+      if (apex < 0) continue;
+      const ax = rest[apex * 3], ay = rest[apex * 3 + 1], az = rest[apex * 3 + 2];
+      const near: number[] = [];
+      for (let i = 0; i < d.bodyVertexCount; i++) {
+        const dx = rest[i * 3] - ax, dy = rest[i * 3 + 1] - ay, dz = rest[i * 3 + 2] - az;
+        if (dx * dx + dy * dy + dz * dz < R * R && rest[i * 3] * s > 0) near.push(i);
+      }
+      // algebraic sphere fit to the ring 0.55R..R (the part of the breast that is already round)
+      const A: number[][] = [], b: number[] = [];
+      for (const i of near) {
+        const x = rest[i * 3], y = rest[i * 3 + 1], z = rest[i * 3 + 2];
+        const r = Math.hypot(x - ax, y - ay, z - az);
+        if (r < 0.55 * R) continue;
+        A.push([x, y, z, 1]); b.push(x * x + y * y + z * z);
+      }
+      if (A.length < 12) continue;
+      const sol = leastSquares4(A, b);
+      if (!sol) continue;
+      const cx = sol[0] / 2, cy = sol[1] / 2, cz = sol[2] / 2;
+      const rad = Math.sqrt(Math.max(0, sol[3] + cx * cx + cy * cy + cz * cz));
+      if (!(rad > 0.03 && rad < 0.2)) continue;
+      for (const i of near) {
+        const x = rest[i * 3], y = rest[i * 3 + 1], z = rest[i * 3 + 2];
+        const r = Math.hypot(x - ax, y - ay, z - az);
+        // full dome in the middle, blending out toward the edge of the breast
+        const t = Math.min(1, (1 - r / R) * 1.6), w = t * t * (3 - 2 * t);
+        const vx = x - cx, vy = y - cy, vz = z - cz, l = Math.hypot(vx, vy, vz) || 1;
+        rest[i * 3] = x + (cx + (vx / l) * rad - x) * w;
+        rest[i * 3 + 1] = y + (cy + (vy / l) * rad - y) * w;
+        rest[i * 3 + 2] = z + (cz + (vz / l) * rad - z) * w;
+      }
     }
   }
 
@@ -237,4 +338,25 @@ export function computeNormals(pos: Float32Array, index: Uint32Array, count: num
     out[o] /= l; out[o + 1] /= l; out[o + 2] /= l;
   }
   return out;
+}
+
+/** Least squares for a 4-unknown system (normal equations, Gaussian elimination). */
+function leastSquares4(A: number[][], b: number[]): number[] | null {
+  const M = Array.from({ length: 4 }, () => new Float64Array(5));
+  for (let r = 0; r < A.length; r++) for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) M[i][j] += A[r][i] * A[r][j];
+    M[i][4] += A[r][i] * b[r];
+  }
+  for (let c = 0; c < 4; c++) {
+    let p = c;
+    for (let r = c + 1; r < 4; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-14) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < 4; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k < 5; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return [0, 1, 2, 3].map((i) => M[i][4] / M[i][i]);
 }

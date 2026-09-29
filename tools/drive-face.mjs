@@ -1,0 +1,45 @@
+// Dev helper: upload a selfie in the app, screenshot 3D and 寫真, reload (face restored), remove it.
+// usage: node tools/drive-face.mjs [selfie.png]   (needs `npm run dev`)
+import { chromium } from "playwright";
+const [selfie = "samples/face-caucasian.png"] = process.argv.slice(2);
+const browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+const errs = [];
+page.on("pageerror", (e) => errs.push(e.message));
+page.on("console", (m) => { if (m.type() === "error" && !/^INFO:/.test(m.text())) errs.push(m.text()); });
+const ready = () => page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
+const idle = () => page.waitForFunction(() => document.querySelector("#busy").hidden, null, { timeout: 120000 });
+await page.goto("http://localhost:5391/");
+await ready();
+await page.uncheck("#quality");
+const t0 = Date.now();
+await page.setInputFiles("#face-photo", selfie);
+await page.waitForFunction(() => /已套用|找不到|失敗/.test(document.querySelector("#face-status").textContent), null, { timeout: 180000 });
+await page.waitForTimeout(500);
+await idle();
+console.log("status:", await page.textContent("#face-status"), `(${Date.now() - t0} ms)`);
+await page.click("#pose-half");
+await page.waitForFunction(() => window.__closet.poseSettled, null, { timeout: 30000 });
+await page.waitForTimeout(1000);
+await page.screenshot({ path: "_artifacts/face-3d.png" });
+await page.selectOption("#look-style", "photo");
+await page.waitForTimeout(300);
+await idle();
+await page.waitForTimeout(500);
+await page.screenshot({ path: "_artifacts/face-photo.png" });
+// reload: the face should come back from storage
+await page.reload();
+await ready();
+await page.waitForFunction(() => /之前上傳/.test(document.querySelector("#face-status").textContent), null, { timeout: 180000 }).catch(() => errs.push("face not restored after reload"));
+await idle();
+await page.waitForTimeout(800);
+await page.screenshot({ path: "_artifacts/face-reload.png" });
+await page.click("#face-remove");
+await page.waitForTimeout(500);
+await idle();
+await page.waitForTimeout(800);
+await page.screenshot({ path: "_artifacts/face-removed.png" });
+await page.selectOption("#look-style", "3d");
+await page.click("#pose-stand");
+console.log(errs.join("\n") || "no errors");
+await browser.close();

@@ -16,6 +16,14 @@
           <button id="pose-sit" data-pose="sit">坐姿</button>
           <button id="pose-half" data-pose="half">半身</button>
         </div>
+        <label class="toggle" title="站姿時雙腳的距離：往左拉是併攏">雙腳 <input type="range" id="stance" min="0" max="1" step="0.05" value="1" aria-label="雙腳距離（0 併攏，1 張開）" /></label>
+        <label class="toggle look-pick" title="3D 可以旋轉、坐下；寫真是站姿正面的精緻圖">呈現
+          <select id="look-style">
+            <option value="3d">3D（可旋轉）</option>
+            <option value="photo">寫真</option>
+          </select>
+        </label>
+        <button id="look-save" class="toggle" hidden>下載圖片</button>
         <label class="toggle"><input type="checkbox" id="autorotate" /> 自動旋轉</label>
         <label class="toggle"><input type="checkbox" id="underwear" checked /> 內衣</label>
         <label class="toggle"><input type="checkbox" id="heatmap" /> 鬆緊分布</label>
@@ -27,6 +35,7 @@
       </div>
       <div id="loading">載入假人模型中…</div>
       <div id="busy" hidden>計算中…</div>
+      <div id="look-note" hidden>精緻呈現是站姿正面；坐姿請切回 3D。</div>
     </section>
 
     <aside id="panel">
@@ -42,6 +51,22 @@
 
       <!-- 身形 -->
       <div class="tab" id="tab-body">
+        <h2>我的假人 <small>存在這個瀏覽器，也可以匯出成檔案</small></h2>
+        <div class="row">
+          <label>已存的假人<select id="avatar-list"></select></label>
+          <button id="avatar-load">讀取</button>
+          <button id="avatar-delete">刪除</button>
+        </div>
+        <div class="row">
+          <label>名稱<input id="avatar-name" type="text" placeholder="例如：我、媽媽" maxlength="30" /></label>
+          <button id="avatar-save" class="primary">儲存目前的假人</button>
+        </div>
+        <div class="row">
+          <button id="avatar-export">匯出檔案</button>
+          <label class="file">匯入檔案<input id="avatar-import" type="file" accept=".json,application/json" /></label>
+        </div>
+        <p class="hint" id="avatar-status">會儲存：三圍與尺寸、體重、進階體型微調、膚色、髮型、髮色、我的臉（自拍）、雙腳距離。</p>
+
         <h2>三圍與尺寸 <small>公分／公斤</small></h2>
         <div class="grid2" id="body-form">
           <label>身高<input id="m-height" type="number" step="0.5" min="130" max="200" /></label>
@@ -81,6 +106,13 @@
           <label>髮型<select id="hair"></select></label>
           <label>髮色<input id="hair-color" type="color" value="#3b2a20" /></label>
         </div>
+
+        <h2>我的臉 <small>照片只存在這個瀏覽器</small></h2>
+        <p class="hint">上傳一張正面自拍（臉朝前、光線均勻、頭髮不要遮住眉毛最好）。會把五官、膚色、眼睛顏色、髮色和最接近的髮型套到假人上，3D 和寫真都看得到。</p>
+        <label class="file">自拍照<input id="face-photo" type="file" accept="image/*" /></label>
+        <label class="slider-row">相似度<input id="face-strength" type="range" min="0.3" max="1" step="0.05" value="0.9" /></label>
+        <div class="row"><button id="face-remove">移除我的臉</button></div>
+        <p class="hint" id="face-status"></p>
       </div>
 
       <!-- 試穿 -->
@@ -104,8 +136,18 @@
         </div>
         <h2>身上的衣服</h2>
         <ul id="worn-list" class="list"></ul>
+        <h2>一鍵穿搭 <small>UNIQLO 標準尺寸，依你的身形自動選尺碼</small></h2>
+        <div id="outfit-chips" class="chips"></div>
+        <h2>用文字生出衣櫃 <small>尺寸依最接近的 UNIQLO 基本款</small></h2>
+        <textarea id="gen-text" rows="2" placeholder="例：上班通勤的膠囊衣櫃，大地色系、好搭配；或：白色條紋長袖上衣、黑色寬褲、碎花長裙"></textarea>
+        <div class="row">
+          <label>件數<select id="gen-count"><option>1</option><option selected>3</option><option>5</option><option>8</option></select></label>
+          <button id="gen-go" class="primary">生成並放進衣櫃</button>
+        </div>
+        <p class="hint" id="gen-status">用 AI 理解需要先執行 <code>npm run bridge</code>；沒有開時，會用關鍵字判斷（顏色、花紋、袖長、類型）。</p>
         <h2>衣櫃 <small>收藏在這個瀏覽器裡，之後可以一鍵再穿</small></h2>
         <ul id="wardrobe-list" class="list"></ul>
+        <div class="row"><button id="wardrobe-defaults">放回預設衣服</button></div>
       </div>
 
       <!-- 尺寸 -->

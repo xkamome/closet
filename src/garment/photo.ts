@@ -106,6 +106,15 @@ function floodBackground(px: Uint8ClampedArray, W: number, H: number): Uint8Arra
   const tol = Math.max(28, Math.min(80, sd * 2.5 + 22));
   const bg = new Uint8Array(W * H);
   const stack: number[] = [];
+  const lum = (c: number[]) => c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
+  const lm = Math.max(1, lum(mean));
+  const isShadow = (c: number[]) => {
+    const l = lum(c);
+    if (l > lm * 1.02 || l < lm * 0.5) return false;
+    // same hue / saturation as the background: compare chromaticity
+    const k = lm / Math.max(1, l);
+    return Math.hypot(c[0] * k - mean[0], c[1] * k - mean[1], c[2] * k - mean[2]) < 14;
+  };
   const seed = (x: number, y: number) => {
     const i = y * W + x;
     if (!bg[i] && Math.sqrt(dist2(rgb(px, x, y, W), mean)) < tol) { bg[i] = 1; stack.push(i); }
@@ -121,8 +130,9 @@ function floodBackground(px: Uint8ClampedArray, W: number, H: number): Uint8Arra
       const j = ny * W + nx;
       if (bg[j]) return;
       const cn = rgb(px, nx, ny, W);
-      // grow through pixels close to the background model and to their neighbour (soft gradients/shadows)
-      if (Math.sqrt(dist2(cn, mean)) < tol * 1.25 && Math.sqrt(dist2(cn, c)) < tol * 0.45) { bg[j] = 1; stack.push(j); }
+      // grow through pixels close to the background model and to their neighbour (soft gradients),
+      // or through the garment's cast shadow: the background colour, only darker
+      if ((Math.sqrt(dist2(cn, mean)) < tol * 1.25 || isShadow(cn)) && Math.sqrt(dist2(cn, c)) < tol * 0.45) { bg[j] = 1; stack.push(j); }
     };
     tryN(x + 1, y); tryN(x - 1, y); tryN(x, y + 1); tryN(x, y - 1);
   }
@@ -182,7 +192,13 @@ export function guessGarment(c: Cutout): TypeGuess {
   const aspect = H / W;
   const top = widthAt(0.12), mid = widthAt(0.5), bot = widthAt(0.95);
   const sleeveSpread = Math.max(widthAt(0.2), widthAt(0.3)) / Math.max(0.05, mid);
-  if (gap > H * 0.2 && aspect > 1.2) return { type: "pants", sleeve: "none", confidence: 0.8, reason: "下半部中間有褲管間隙" };
+  // the gap between the legs reaches the hem (skirts and dresses never have an empty centre at the hem;
+  // the cut-out's smoothing can close the narrow top of the gap, so its length alone is not enough)
+  let hemGap = 0;
+  const x0 = Math.round(c.centerX);
+  for (let y = Math.round(H * 0.9); y < H; y++) if (!mask[y * W + x0]) hemGap++;
+  const gapAtHem = hemGap >= (H - Math.round(H * 0.9)) * 0.8;
+  if ((gap > H * 0.2 || (gap > H * 0.1 && gapAtHem)) && aspect > 1.2) return { type: "pants", sleeve: "none", confidence: 0.8, reason: "下半部中間有褲管間隙" };
   // length vs torso width (sleeves excluded): real tees ~1.4, long tops ~1.5, dresses ~2.1
   if (H / Math.max(1, c.torsoHalfWidth * 2) > 1.8) {
     const sleeve: Sleeve = sleeveFromReach(c, sleeveSpread);

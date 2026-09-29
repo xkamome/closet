@@ -16,6 +16,15 @@ export const NECK_LABELS: Record<Neckline, string> = { crew: "圓領", v: "V 領
 export const SILHOUETTE_LABELS: Record<Silhouette, string> = { fitted: "合身", straight: "直筒", aline: "A 字", oversized: "寬鬆" };
 export const RISE_LABELS: Record<Rise, string> = { high: "高腰", natural: "中腰", low: "低腰" };
 
+/**
+ * Waistband height relative to the natural waist (m). Trousers sit lower than skirts: mid-rise jeans
+ * sit around the navel, a few cm under the narrowest point.
+ */
+export function riseOffset(type: GarmentType, rise: Rise): number {
+  if (type === "pants") return rise === "high" ? 0.01 : rise === "low" ? -0.075 : -0.035;
+  return rise === "high" ? 0.03 : rise === "low" ? -0.06 : 0;
+}
+
 export interface GarmentSpec {
   type: GarmentType;
   sleeve: Sleeve;
@@ -30,6 +39,8 @@ export interface GarmentSpec {
   cut?: { topY?: number; bottomY?: number };
   /** colour used when there is no photo */
   color?: string;
+  /** tops: tucked into the skirt / trousers worn with it */
+  tucked?: boolean;
 }
 
 /** Underwear set (bra + briefs) so the mannequin is dressed for fitting. */
@@ -79,4 +90,39 @@ export function defaultSpec(type: GarmentType, body: { bust: number; waist: numb
       break;
   }
   return base;
+}
+
+export interface StyleChoice { sleeve: Sleeve; neckline: Neckline; silhouette: Silhouette; rise: Rise; color?: string }
+
+/** A garment of `type` with the chosen cut, sized for the body (silhouette ease, sleeve length). */
+export function specFor(type: GarmentType, c: StyleChoice, body: Parameters<typeof defaultSpec>[1] & { armLength: number }): GarmentSpec {
+  const spec = defaultSpec(type, body);
+  spec.silhouette = c.silhouette;
+  spec.sleeve = type === "skirt" || type === "pants" ? "none" : c.sleeve;
+  spec.neckline = c.neckline;
+  spec.rise = c.rise;
+  if (c.color) spec.color = c.color;
+  if (spec.silhouette === "oversized" && spec.m.chest) { spec.m.chest += 16; spec.m.shoulder = (spec.m.shoulder ?? body.shoulder) + 6; }
+  if (spec.silhouette === "fitted" && spec.m.chest) { spec.m.chest = body.bust + 4; spec.m.waist = body.waist + 5; }
+  if (spec.silhouette === "aline" && spec.m.hem) spec.m.hem = Math.max(spec.m.hem, (spec.m.hip ?? body.hips) * 1.45);
+  if (spec.silhouette === "straight" && (type === "skirt" || type === "dress")) spec.m.hem = (spec.m.hip ?? body.hips + 8) * 1.02;
+  if (spec.silhouette === "fitted" && type === "skirt") { spec.m.hip = body.hips + 4; spec.m.hem = body.hips - 2; }
+  if (spec.sleeve === "long") spec.m.sleeveLength = body.armLength;
+  if (spec.sleeve === "elbow") spec.m.sleeveLength = body.armLength * 0.55;
+  return spec;
+}
+
+/**
+ * A top tucked into the bottom worn with it: the hem ends 5 cm below the waistband and its lower girths
+ * shrink to what fits inside the waistband (the rest of the ease blouses above it).
+ */
+export function tuckedSpec(top: GarmentSpec, bottom: GarmentSpec, body: { neckY: number; waistY: number; waist: number }): GarmentSpec {
+  const t = structuredClone(top);
+  const bandY = body.waistY + riseOffset(bottom.type, bottom.rise) * 100;
+  t.m.length = Math.max(25, Math.round(body.neckY - (bandY - 5)));
+  const inside = (bottom.m.waist ?? body.waist + 2) + 2;
+  t.m.waist = Math.min(t.m.waist ?? t.m.chest ?? inside, inside);
+  t.m.hem = t.m.waist;
+  delete t.m.hip;
+  return t;
 }

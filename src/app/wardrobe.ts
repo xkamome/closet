@@ -16,6 +16,12 @@ export interface SavedGarment {
   cutout?: Blob; // PNG with alpha (flat-lay photos)
   person?: { image: Blob; mask: Blob; marks: PersonMarks };
   color: [number, number, number];
+  /** preset items (default wardrobe, generated from a description): sized for the current body when worn */
+  preset?: import("./defaults").Preset;
+  /** UNIQLO basic (product id, colour index): sized from UNIQLO's chart when worn */
+  uniqlo?: { id: string; color: number };
+  /** made from a text description: the drawn design and the UNIQLO basic its sizes come from */
+  generated?: { design: import("./generate").GenItem; base: string };
 }
 
 const DB = "closet2", STORE = "wardrobe";

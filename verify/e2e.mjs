@@ -159,9 +159,133 @@ try {
     await shot("07-person-photo");
   });
 
+  await check("photo display mode draws the outfit", async () => {
+    for (const st of ["photo"]) {
+      await page.selectOption("#look-style", st);
+      await page.waitForTimeout(200);
+      await page.waitForFunction(() => document.querySelector("#busy").hidden && !document.querySelector("#look-canvas").hidden, null, { timeout: 120000 });
+      await page.waitForTimeout(300);
+      const stats = await page.evaluate(() => {
+        const c = document.querySelector("#look-canvas");
+        const tmp = document.createElement("canvas");
+        tmp.width = 120; tmp.height = 200;
+        const ctx = tmp.getContext("2d");
+        ctx.drawImage(c, 0, 0, 120, 200);
+        const d = ctx.getImageData(0, 0, 120, 200).data;
+        // garment colours from the person photo: red stripes (top) and blue (skirt)
+        let red = 0, blue = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          // hue-based: stylised modes lighten colours toward the paper
+          if (d[i] > d[i + 1] + 45 && d[i] > d[i + 2] + 35) red++;
+          if (d[i + 2] > d[i] + 30 && d[i + 2] > d[i + 1] + 10) blue++;
+        }
+        return { red: red / (d.length / 4), blue: blue / (d.length / 4) };
+      });
+      assert(stats.red > 0.004 && stats.blue > 0.004, `${st}: garment colours missing ${JSON.stringify(stats)}`);
+      await shot("08-look-" + st);
+    }
+    await page.selectOption("#look-style", "3d");
+    await page.waitForFunction(() => document.querySelector("#look-canvas").hidden, null, { timeout: 20000 });
+  });
+
+  await check("my face: a selfie is put on the avatar (3D and 寫真) and can be removed", async () => {
+    await page.click('#tabs button[data-tab="body"]');
+    // synthetic selfie: a rendered MakeHuman face (no real person)
+    await page.setInputFiles("#face-photo", "samples/face-caucasian.png");
+    await page.waitForFunction(() => /已套用|找不到|失敗/.test(document.querySelector("#face-status").textContent), null, { timeout: 240000 });
+    const status = await page.textContent("#face-status");
+    assert(/已套用/.test(status), "face status: " + status);
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.avatar.skinMaterial.map?.image instanceof HTMLCanvasElement, null, { timeout: 120000 });
+    const hair = await page.inputValue("#hair");
+    assert(hair === "hair_long01", "long hair in the selfie -> long hairstyle, got " + hair);
+    await page.selectOption("#look-style", "photo");
+    await page.waitForTimeout(200);
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && !document.querySelector("#look-canvas").hidden, null, { timeout: 120000 });
+    await page.waitForTimeout(300);
+    await shot("09-my-face");
+    await page.selectOption("#look-style", "3d");
+    await page.click("#face-remove");
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && !(window.__closet.avatar.skinMaterial.map?.image instanceof HTMLCanvasElement), null, { timeout: 60000 });
+    assert(await page.evaluate(() => window.__closet.selfie === null), "selfie removed");
+    await page.click('#tabs button[data-tab="wear"]');
+  });
+
+  await check("default wardrobe: starter garments are there and can be worn", async () => {
+    await page.waitForFunction(() => document.querySelectorAll("#wardrobe-list li").length >= 6, null, { timeout: 60000 });
+    const names = await page.$$eval("#wardrobe-list li span", (xs) => xs.map((x) => x.textContent));
+    for (const n of ["印花 T 恤", "碎花洋裝", "直筒牛仔褲"]) assert(names.includes(n), "default item missing: " + n + " in " + names);
+    await page.click("#wardrobe-list li:has-text('直筒牛仔褲') button:has-text('穿上')");
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.worn.some((w) => w.spec.type === "pants"), null, { timeout: 60000 });
+    // preset items are cut for the current body
+    const inseam = await page.evaluate(() => window.__closet.worn.find((w) => w.spec.type === "pants").spec.m.inseam);
+    const bodyInseam = await page.evaluate(() => window.__closet.measurements.inseam);
+    assert(Math.abs(inseam - bodyInseam) < 1, `jeans inseam ${inseam} vs body ${bodyInseam}`);
+    await page.click("#worn-list li:has-text('長褲') button:has-text('脫下')");
+    await page.waitForFunction(() => !window.__closet.worn.some((w) => w.spec.type === "pants"), null, { timeout: 20000 });
+  });
+
+  await check("saved avatars: save, change the body, load it back", async () => {
+    await page.click('#tabs button[data-tab="body"]');
+    const before = await page.evaluate(() => window.__closet.measurements.waist);
+    await page.fill("#avatar-name", "驗收假人");
+    await page.click("#avatar-save");
+    await page.waitForFunction(() => /已儲存/.test(document.querySelector("#avatar-status").textContent), null, { timeout: 20000 });
+    await page.fill("#m-waist", String(Math.round(before + 8)));
+    await page.click("#apply-body");
+    await page.waitForFunction((b) => document.querySelector("#busy").hidden && window.__closet.measurements.waist > b + 5, before, { timeout: 60000 });
+    await page.click("#avatar-load");
+    await page.waitForFunction(() => /已讀取/.test(document.querySelector("#avatar-status").textContent), null, { timeout: 60000 });
+    await page.waitForFunction(() => document.querySelector("#busy").hidden, null, { timeout: 60000 });
+    const after = await page.evaluate(() => window.__closet.measurements.waist);
+    assert(Math.abs(after - before) < 1.5, `waist after load ${after} vs saved ${before}`);
+    assert((await page.inputValue("#m-waist")) !== String(Math.round(before + 8)), "form refilled from the saved avatar");
+    await page.click('#tabs button[data-tab="wear"]');
+  });
+
+  await check("tuck in: a top goes inside the trousers and comes out again", async () => {
+    await page.click("#wardrobe-list li:has-text('UNIQLO 圓領 T 恤') button:has-text('穿上')");
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.worn.some((w) => w.uniqlo), null, { timeout: 60000 });
+    await page.click("#wardrobe-list li:has-text('直筒牛仔褲') button:has-text('穿上')");
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.worn.some((w) => w.spec.type === "pants"), null, { timeout: 60000 });
+    const size = await page.evaluate(() => window.__closet.worn.find((w) => w.uniqlo).spec.size);
+    assert(/^(XXS|XS|S|M|L|XL|XXL)$/.test(size), "UNIQLO size recommended: " + size);
+    await page.click("#worn-list button.tuck");
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.worn.find((w) => w.spec.type === "top")?.spec.tucked, null, { timeout: 60000 });
+    // the tucked top ends inside the waistband: its rebuilt garment is shorter than the untucked one
+    const tuckedH = await page.evaluate(() => { const v = window.__closet.worn.find((w) => w.spec.type === "top").view.data.bbox; return v.maxY - v.minY; });
+    await page.click("#worn-list button.tuck");
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && !window.__closet.worn.find((w) => w.spec.type === "top")?.spec.tucked, null, { timeout: 60000 });
+    const outH = await page.evaluate(() => { const v = window.__closet.worn.find((w) => w.spec.type === "top").view.data.bbox; return v.maxY - v.minY; });
+    assert(tuckedH < outH - 0.02, `tucked top height ${tuckedH} should be shorter than untucked ${outH}`);
+    await shot("10-uniqlo-tuck");
+  });
+
+  await check("one-click outfits and a wardrobe from a description (keyword reader, no AI bridge)", async () => {
+    await page.click('#outfit-chips button[data-outfit="瑜伽"]');
+    await page.waitForTimeout(300);
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.worn.length === 2, null, { timeout: 60000 });
+    const yoga = await page.evaluate(() => window.__closet.worn.map((w) => w.spec.type).sort().join(","));
+    assert(yoga === "pants,top", "yoga outfit " + yoga);
+    // deterministic: no AI bridge in the test, the keyword reader handles the description
+    await page.route("**/api/ask", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ text: "（測試環境沒有 AI）" }) }));
+    await page.fill("#gen-text", "白色條紋長袖上衣、黑色碎花長裙");
+    await page.selectOption("#gen-count", "3");
+    await page.click("#gen-go");
+    await page.waitForFunction(() => /已放進衣櫃|失敗/.test(document.querySelector("#gen-status").textContent), null, { timeout: 240000 });
+    const st = await page.textContent("#gen-status");
+    assert(/已放進衣櫃 2 件/.test(st), "generator: " + st);
+    await page.click("#wardrobe-list li:has-text('✦') button:has-text('穿上')");
+    await page.waitForFunction(() => document.querySelector("#busy").hidden && window.__closet.worn.some((w) => w.generated), null, { timeout: 60000 });
+    const size = await page.evaluate(() => window.__closet.worn.find((w) => w.generated).spec.size);
+    assert(/^(XXS|XS|S|M|L|XL|XXL|3XL)$/.test(size ?? ""), "generated item sized like UNIQLO: " + size);
+    await shot("11-generated");
+    await page.unroute("**/api/ask");
+  });
+
   await check("wardrobe: save, take off, wear again", async () => {
+    const before = await page.$$eval("#wardrobe-list li", (xs) => xs.length);
     await page.click("#worn-list li:first-child button:has-text('收進衣櫃')");
-    await page.waitForFunction(() => document.querySelectorAll("#wardrobe-list li button").length >= 2, null, { timeout: 20000 });
+    await page.waitForFunction((n) => document.querySelectorAll("#wardrobe-list li").length === n + 1, before, { timeout: 20000 });
     const savedType = await page.evaluate(() => window.__closet.worn[0].spec.type);
     while (await page.locator("#worn-list li button:has-text('脫下')").count()) {
       await page.click("#worn-list li:first-child button:has-text('脫下')");
