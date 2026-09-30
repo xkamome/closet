@@ -193,9 +193,10 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
   const hemY = spec.cut?.bottomY !== undefined ? Y(spec.cut.bottomY)
     : Math.max(minY + 0.015, (isBottom ? waistline : neckY - 0.01) - length);
   const needsCone = spec.type === "skirt" || spec.type === "dress" || (spec.type === "top" && hemY < hipY + 0.03);
-  const coneTop = hipY;
+  // skirts and dresses hang as one piece from the waist: a join at the hip shows as a seam across the seat
+  const coneTop = spec.type === "skirt" ? waistline - 0.015 : spec.type === "dress" ? waistY : hipY;
   // the upper piece tucks 3cm under the skirt/cone so the junction never shows a gap
-  const upperBottom = needsCone ? Math.max(coneTop - 0.03, crotchY + 0.04) : hemY;
+  const upperBottom = needsCone ? Math.max(coneTop - (spec.type === "skirt" ? 0.005 : 0.03), crotchY + 0.04) : hemY;
 
   stage("before-body");
   // ---------- body girths per level
@@ -387,6 +388,7 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
     : shoulderDrop + (g("sleeveLength") ?? { short: 0.16, elbow: 0.3, long: 0.58 }[spec.sleeve]);
 
   let necklineInfo: { nb: number[]; hw: number } | null = null;
+  let strapInfo: { nb: number[]; edgeF: number; edgeB: number; x: number } | null = null;
   stage("before-clipping");
   // ---------- clipping
   if (!isBottom) {
@@ -400,8 +402,19 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
       scoop: { hw: neckR + 0.05, df: 0.1, db: 0.025, v: false },
       boat: { hw: neckR + 0.095, df: 0.03, db: 0.03, v: false },
     }[spec.neckline];
-    necklineInfo = { nb: [nb.x, nb.y, nb.z], hw: NL.hw };
-    work = clip(work, (v) => {
+    const straps = !!spec.straps && spec.sleeve === "none";
+    necklineInfo = straps ? null : { nb: [nb.x, nb.y, nb.z], hw: NL.hw };
+    if (straps) {
+      // camisole: a low, nearly straight top edge (front and back); the straps are added below
+      const edgeF = nb.y - 0.13 * sc, edgeB = nb.y - 0.12 * sc;
+      strapInfo = { nb: [nb.x, nb.y, nb.z], edgeF, edgeB, x: neckR + 0.052 };
+      work = clip(work, (v) => {
+        const p = P(work, v);
+        const wf = Math.min(1, Math.max(0, (p[2] - nb.z + 0.03) / 0.06));
+        const ax = Math.abs(p[0] - nb.x);
+        return edgeF * wf + edgeB * (1 - wf) + Math.max(0, ax - 0.06) * 0.35 - p[1];
+      });
+    } else work = clip(work, (v) => {
       if (frac(work.skin[v], headBone) > 0.55) return -1;
       const p = P(work, v);
       const ax = Math.abs(p[0] - nb.x);
@@ -666,6 +679,50 @@ export function buildGarment(spec: GarmentSpec, ctx: BuildContext): GarmentMesh 
         const a = base + L * N + b, c = base + L * N + ((b + 1) % N);
         const a2 = a + N, c2 = c + N;
         work.tris.push(a, a2, c, c, a2, c2);
+      }
+    }
+  }
+
+  // ---------- camisole straps: thin bands over the shoulders, from the front edge to the back edge
+  if (strapInfo) {
+    const si = strapInfo;
+    const half = 0.006, off = th + 0.0025;
+    for (const side of [1, -1]) {
+      const sx = si.nb[0] + side * si.x;
+      // body surface in the plane x = sx, seen from a point under the shoulder: max radius per angle
+      const cy = si.edgeB + 0.02, cz = si.nb[2];
+      const BINS2 = 48, rad = new Float64Array(BINS2).fill(-1), py = new Float64Array(BINS2), pz = new Float64Array(BINS2);
+      for (let i = 0; i < nBody; i++) {
+        if (measurer.regions[i] === 3 || Math.abs(rest[i * 3] - sx) > 0.012 || rest[i * 3 + 1] < cy - 0.02) continue;
+        const dy = rest[i * 3 + 1] - cy, dz = rest[i * 3 + 2] - cz;
+        const th2 = Math.atan2(dz, dy); // 0 = up, + toward the front
+        const b = Math.round(((th2 + Math.PI) / (2 * Math.PI)) * (BINS2 - 1));
+        const r = Math.hypot(dy, dz);
+        if (r > rad[b]) { rad[b] = r; py[b] = rest[i * 3 + 1]; pz[b] = rest[i * 3 + 2]; }
+      }
+      const path: number[][] = [];
+      for (let b = BINS2 - 1; b >= 0; b--) {
+        if (rad[b] < 0) continue;
+        const front = pz[b] > cz;
+        if (py[b] < (front ? si.edgeF : si.edgeB) - 0.01) continue;
+        const dy = py[b] - cy, dz = pz[b] - cz, l = Math.hypot(dy, dz) || 1;
+        path.push([sx, py[b] + (dy / l) * off, pz[b] + (dz / l) * off, dy / l, dz / l]);
+      }
+      if (path.length < 3) continue;
+      // smooth the path (the body's vertex ring is uneven)
+      for (let it = 0; it < 3; it++) for (let k = 1; k < path.length - 1; k++) for (const c of [1, 2]) path[k][c] = (path[k - 1][c] + 2 * path[k][c] + path[k + 1][c]) / 4;
+      const base = work.skin.length;
+      for (const p of path) {
+        for (const dx of [-half, half]) {
+          work.pos.push(p[0] + dx, p[1], p[2]);
+          work.nor.push(0, p[3], p[4]);
+          work.skin.push(knnSkin(p[0] + dx, p[1], p[2], { i: [0, 0, 0, 0], w: [0, 0, 0, 0] }, 1));
+          strainArr.push(1.05);
+        }
+      }
+      for (let k = 0; k < path.length - 1; k++) {
+        const a = base + k * 2, b = a + 1, c = a + 2, d = a + 3;
+        work.tris.push(a, c, b, b, c, d);
       }
     }
   }

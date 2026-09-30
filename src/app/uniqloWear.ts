@@ -78,6 +78,14 @@ export function wearUniqlo(u: UniqloItem, colorIndex: number, meas: Measurements
   const spec = specFor(u.type, { sleeve: u.sleeve, neckline: u.neckline, silhouette: u.silhouette, rise: "natural", color: color.hex, pleated: /百褶/.test(u.name) }, meas);
   // chart values win; anything the chart doesn't give keeps the cut's defaults for this body
   spec.m = { ...spec.m, ...row.values };
+  if ((u.type === "top" || u.type === "dress") && u.silhouette === "fitted" && row.values.chest !== undefined) {
+    // stretch tops sold by chest only: the rest of the body gets the same (often negative) ease, so a
+    // compact fit hugs the waist instead of hanging straight down
+    const ease = row.values.chest - meas.bust;
+    if (row.values.waist === undefined) spec.m.waist = meas.waist + ease + 2;
+    if (u.type === "top" && row.values.hem === undefined) spec.m.hem = meas.hips + ease + 1;
+    if (u.type === "top") delete spec.m.hip;
+  }
   if (u.type === "pants" && row.values.inseam !== undefined) {
     // shorts / cropped: the outseam is the rise (waistband to crotch) plus the inseam
     spec.m.length = Math.round(meas.waistY + riseOffset("pants", spec.rise) * 100 - meas.crotchY + row.values.inseam);
